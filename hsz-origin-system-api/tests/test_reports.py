@@ -1,11 +1,17 @@
 import pytest
 from fastapi.testclient import TestClient
 
+from app.core.security import create_access_token
 from app.main import app
 
 
+def auth_headers() -> dict[str, str]:
+    token, _ = create_access_token(1, "admin")
+    return {"Authorization": f"Bearer {token}"}
+
+
 def test_entry_flow_report_returns_only_entry_directions() -> None:
-    with TestClient(app) as client:
+    with TestClient(app, headers=auth_headers()) as client:
         response = client.get(
             "/api/v1/reports/entry-flow",
             params={
@@ -23,7 +29,7 @@ def test_entry_flow_report_returns_only_entry_directions() -> None:
 
 @pytest.mark.parametrize("granularity", ["day", "week", "month", "year"])
 def test_entry_flow_report_supports_calendar_granularity(granularity: str) -> None:
-    with TestClient(app) as client:
+    with TestClient(app, headers=auth_headers()) as client:
         response = client.get(
             "/api/v1/reports/entry-flow",
             params={
@@ -38,7 +44,7 @@ def test_entry_flow_report_supports_calendar_granularity(granularity: str) -> No
 
 
 def test_exit_flow_report_returns_only_available_g50_directions() -> None:
-    with TestClient(app) as client:
+    with TestClient(app, headers=auth_headers()) as client:
         response = client.get(
             "/api/v1/reports/exit-flow",
             params={
@@ -54,7 +60,7 @@ def test_exit_flow_report_returns_only_available_g50_directions() -> None:
 
 
 def test_exit_direction_list_marks_non_g50_directions_unavailable() -> None:
-    with TestClient(app) as client:
+    with TestClient(app, headers=auth_headers()) as client:
         response = client.get("/api/v1/reports/directions", params={"flow": "exit"})
 
     assert response.status_code == 200
@@ -65,7 +71,7 @@ def test_exit_direction_list_marks_non_g50_directions_unavailable() -> None:
 
 
 def test_vehicle_report_returns_type_code_and_paginates() -> None:
-    with TestClient(app) as client:
+    with TestClient(app, headers=auth_headers()) as client:
         response = client.get(
             "/api/v1/reports/vehicle-types",
             params={
@@ -84,7 +90,7 @@ def test_vehicle_report_returns_type_code_and_paginates() -> None:
 
 
 def test_entry_station_report_marks_missing_name_as_unknown() -> None:
-    with TestClient(app) as client:
+    with TestClient(app, headers=auth_headers()) as client:
         response = client.get(
             "/api/v1/reports/entry-stations",
             params={
@@ -98,3 +104,10 @@ def test_entry_station_report_marks_missing_name_as_unknown() -> None:
 
     assert response.status_code == 200
     assert any(item["station_name"] == "\u672a\u77e5" for item in response.json()["items"])
+
+
+def test_report_requires_login() -> None:
+    with TestClient(app) as client:
+        response = client.get("/api/v1/reports/entry-flow")
+
+    assert response.status_code == 401
