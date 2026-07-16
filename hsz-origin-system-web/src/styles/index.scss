@@ -1,0 +1,10 @@
+* { box-sizing: border-box; }
+body { margin: 0; background: #f5f7fa; color: #263238; font-family: 'Microsoft YaHei', sans-serif; }
+.layout { min-height: 100vh; }
+.sidebar { background: #fff; border-right: 1px solid #e4e7ed; }
+.sidebar h1 { padding: 16px; font-size: 16px; line-height: 1.6; font-weight: 600; }
+.header { display: flex; align-items: center; background: #fff; border-bottom: 1px solid #e4e7ed; }
+.metric-card { margin-bottom: 16px; color: #606266; }
+.metric-card strong { display: block; margin-top: 12px; color: #303133; font-size: 28px; }
+.login-page, .not-found { display: grid; min-height: 100vh; place-items: center; }
+.login-page .el-card { width: 420px; }
