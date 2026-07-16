@@ -7,7 +7,12 @@ def is_success(row: dict, policy: str) -> tuple[bool, str]:
     if policy == "ANY_RESULT_ZERO":
         return str(trade) == "0" or str(obu) == "0", policy
     if policy == "MEDIA_SPECIFIC":
-        return (str(obu) == "0" if str(row.get("media_type")) == "1" else str(trade) == "0"), policy
+        media_type = str(row.get("media_type"))
+        if media_type == "1":
+            return str(obu) == "0", policy
+        if media_type == "2":
+            return str(trade) == "0", policy
+        return False, policy
     raise ValueError(f"未知成功交易策略：{policy}")
 
 

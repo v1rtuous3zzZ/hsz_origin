@@ -9,11 +9,10 @@ def ensure_month_tables(db: Session, month: str):
 
 
 def write_events(db: Session, events: list[Event], batch_id: int):
-    for event in events:
-        table = f"t_ods_event_{event.event_time:%Y%m}"
-        db.execute(
-            text(
-                f"INSERT IGNORE INTO `{table}` (event_key,source_server_id,source_table_name,source_trade_id,event_time,current_physical_gantry_code,current_gantry_hex,previous_gantry_hex,previous_gantry_source,raw_previous_gantry_json,vehicle_type_code,entry_station_code,media_type,trade_result,obu_trade_result,success_flag,success_rule_code,batch_id) VALUES (:event_key,:source_server_id,:source_table_name,:source_trade_id,:event_time,:current_physical_gantry_code,:current_gantry_hex,:previous_gantry_hex,:previous_gantry_source,:raw_previous_gantry_json,:vehicle_type_code,:entry_station_code,:media_type,:trade_result,:obu_trade_result,:success_flag,:success_rule_code,:batch_id)"
-            ),
-            {**event.__dict__, "batch_id": batch_id},
-        )
+    if not events:
+        return
+    table = f"t_ods_event_{events[0].event_time:%Y%m}"
+    statement = text(
+        f"INSERT IGNORE INTO `{table}` (event_key,source_server_id,source_table_name,source_trade_id,event_time,current_physical_gantry_code,current_gantry_hex,previous_gantry_hex,previous_gantry_source,raw_previous_gantry_json,vehicle_type_code,entry_station_code,media_type,trade_result,obu_trade_result,success_flag,success_rule_code,batch_id) VALUES (:event_key,:source_server_id,:source_table_name,:source_trade_id,:event_time,:current_physical_gantry_code,:current_gantry_hex,:previous_gantry_hex,:previous_gantry_source,:raw_previous_gantry_json,:vehicle_type_code,:entry_station_code,:media_type,:trade_result,:obu_trade_result,:success_flag,:success_rule_code,:batch_id)"
+    )
+    db.execute(statement, [{**event.__dict__, "batch_id": batch_id} for event in events])

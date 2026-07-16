@@ -50,8 +50,8 @@ def sync_window(start: datetime, end: datetime, server_code: str | None = None) 
                     for row in rows:
                         source_metrics["source_row_count"] += 1
                         event = normalize(row, source_server_id=source.source_server_id, source_table_name=source.current_table_name, physical_mapping=physical, policy="MEDIA_SPECIFIC")
+                        buffer.append(event)
                         if event.success_flag:
-                            buffer.append(event)
                             source_metrics["success_event_count"] += 1
                         if len(buffer) == 2000:
                             matched_count = _write(db, buffer, rules, batch_id)
@@ -82,6 +82,8 @@ def _write(db, events, rules, batch_id) -> int:
     write_events(db, events, batch_id)
     matched_count = 0
     for event in events:
+        if not event.success_flag:
+            continue
         matched = match(event, rules)
         write_matches(db, event, matched, batch_id)
         matched_count += len(matched)
