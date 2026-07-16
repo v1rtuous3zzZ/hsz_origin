@@ -30,6 +30,10 @@ API 文档：`http://127.0.0.1:8000/docs`；健康检查：`/health`；系统接
 
 四个统计接口为 `entry-flow`、`exit-flow`、`vehicle-types` 与 `entry-stations`。它们均接受 `start`、`end`、`granularity`（`hour`、`day`、`week`、`month`、`year`）、可重复的 `direction_ids`、`page` 和 `page_size` 参数，响应为 `{page, page_size, total, items}`。`vehicle-types` 返回车型编码，名称由前端枚举；`entry-stations` 在收费站字典缺名时返回 `station_name: "未知"`。
 
+## 手动同步
+
+`GET /api/v1/etl/batches` 分页查看同步批次日志。`POST /api/v1/etl/manual-sync` 接受 `{"start":"...","end":"..."}`，按连续 2 小时窗口同步；窗口跨月时自动切分。每个窗口先读实时交易表，再读当月历史表，并按源服务器与交易主键去重。
+
 ## 测试
 
 ```powershell

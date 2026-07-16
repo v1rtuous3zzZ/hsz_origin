@@ -54,3 +54,9 @@ def inspect_remote(connection, table: str) -> tuple[list[str], list[dict]]:
         resolve_columns(columns)
         cursor.execute(f"SHOW INDEX FROM `{table}`")
         return columns, cursor.fetchall()
+
+
+def table_exists(connection, table: str) -> bool:
+    with connection.cursor() as cursor:
+        cursor.execute("SHOW TABLES LIKE %s", [table])
+        return cursor.fetchone() is not None

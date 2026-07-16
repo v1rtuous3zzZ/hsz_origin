@@ -7,8 +7,8 @@ from app.etl.previous_gantry import select_previous_gantry
 from app.etl.success_policy import is_success
 
 
-def event_key(source_server_id: int, source_table_name: str, source_trade_id: str) -> bytes:
-    value = f"{source_server_id}|{source_table_name}|{source_trade_id}".encode()
+def event_key(source_server_id: int, source_trade_id: str) -> bytes:
+    value = f"{source_server_id}|{source_trade_id}".encode()
     return hashlib.sha256(value).digest()
 
 
@@ -42,7 +42,7 @@ def normalize(
     previous, source, raw = select_previous_gantry(row)
     success, rule = is_success(row, policy)
     return Event(
-        event_key=event_key(source_server_id, source_table_name, str(trade_id)),
+        event_key=event_key(source_server_id, str(trade_id)),
         source_server_id=source_server_id,
         source_table_name=source_table_name,
         source_trade_id=str(trade_id),

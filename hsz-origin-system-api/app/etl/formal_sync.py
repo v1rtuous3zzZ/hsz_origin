@@ -15,7 +15,8 @@ from app.etl.normalizer import normalize
 from app.etl.ods_writer import ensure_month_tables, write_events
 from app.etl.rule_matcher import match
 from app.etl.source_config import load_mapping, load_rules, load_sources
-from app.etl.source_reader import inspect_remote, read_rows, source_connection
+from app.etl.source_reader import inspect_remote, read_rows, source_connection, table_exists
+from app.etl.source_schema import monthly_table, resolve_columns
 
 logger = logging.getLogger("hsz.etl")
 
@@ -43,20 +44,28 @@ def sync_window(start: datetime, end: datetime, server_code: str | None = None) 
                 source_metrics = Counter()
                 try:
                     connection = source_connection(source)
-                    columns, _ = inspect_remote(connection, source.current_table_name)
-                    from app.etl.source_schema import resolve_columns
-                    rows = read_rows(connection, source.current_table_name, resolve_columns(columns), list(physical), start, end, 2000)
                     buffer = []
-                    for row in rows:
-                        source_metrics["source_row_count"] += 1
-                        event = normalize(row, source_server_id=source.source_server_id, source_table_name=source.current_table_name, physical_mapping=physical, policy="MEDIA_SPECIFIC")
-                        buffer.append(event)
-                        if event.success_flag:
-                            source_metrics["success_event_count"] += 1
-                        if len(buffer) == 2000:
-                            matched_count = _write(db, buffer, rules, batch_id)
-                            source_metrics["matched_event_count"] += matched_count
-                            buffer.clear()
+                    seen_trade_ids = set()
+                    tables = [source.current_table_name]
+                    history_table = monthly_table(source.monthly_table_pattern, start)
+                    if history_table and history_table != source.current_table_name and table_exists(connection, history_table):
+                        tables.append(history_table)
+                    for table in tables:
+                        columns, _ = inspect_remote(connection, table)
+                        rows = read_rows(connection, table, resolve_columns(columns), list(physical), start, end, 2000)
+                        for row in rows:
+                            source_metrics["source_row_count"] += 1
+                            trade_id = str(row["trade_id"])
+                            if trade_id in seen_trade_ids:
+                                continue
+                            seen_trade_ids.add(trade_id)
+                            event = normalize(row, source_server_id=source.source_server_id, source_table_name=table, physical_mapping=physical, policy="MEDIA_SPECIFIC")
+                            buffer.append(event)
+                            if event.success_flag:
+                                source_metrics["success_event_count"] += 1
+                            if len(buffer) == 2000:
+                                source_metrics["matched_event_count"] += _write(db, buffer, rules, batch_id)
+                                buffer.clear()
                     source_metrics["matched_event_count"] += _write(db, buffer, rules, batch_id)
                     db.execute(text("UPDATE t_etl_batch_source SET status='SUCCESS',finished_at=NOW(3),source_row_count=:rows,success_event_count=:success,matched_event_count=:matched WHERE batch_id=:batch AND source_server_id=:source"), {"batch":batch_id,"source":source.source_server_id,"rows":source_metrics["source_row_count"],"success":source_metrics["success_event_count"],"matched":source_metrics["matched_event_count"]})
                     metrics += source_metrics
