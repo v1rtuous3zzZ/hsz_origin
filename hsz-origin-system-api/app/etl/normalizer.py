@@ -12,6 +12,15 @@ def event_key(source_server_id: int, source_table_name: str, source_trade_id: st
     return hashlib.sha256(value).digest()
 
 
+def plate_number(value: object) -> str | None:
+    if value is None:
+        return None
+    plate = str(value).strip()
+    if not plate:
+        return None
+    return plate.rsplit("_", 1)[0]
+
+
 def normalize(
     row: dict,
     *,
@@ -33,21 +42,23 @@ def normalize(
     previous, source, raw = select_previous_gantry(row)
     success, rule = is_success(row, policy)
     return Event(
-        event_key(source_server_id, source_table_name, str(trade_id)),
-        source_server_id,
-        source_table_name,
-        str(trade_id),
-        event_time,
-        str(gantry_id),
-        logical,
-        previous,
-        source,
-        json.dumps(raw, ensure_ascii=False),
-        str(row["vehicle_type"]) if row.get("vehicle_type") is not None else None,
-        row.get("en_toll_hex"),
-        str(row["media_type"]) if row.get("media_type") is not None else None,
-        str(row["trade_result"]) if row.get("trade_result") is not None else None,
-        str(row["obu_trade_result"]) if row.get("obu_trade_result") is not None else None,
-        success,
-        rule,
+        event_key=event_key(source_server_id, source_table_name, str(trade_id)),
+        source_server_id=source_server_id,
+        source_table_name=source_table_name,
+        source_trade_id=str(trade_id),
+        event_time=event_time,
+        current_physical_gantry_code=str(gantry_id),
+        current_gantry_hex=logical,
+        previous_gantry_hex=previous,
+        previous_gantry_source=source,
+        raw_previous_gantry_json=json.dumps(raw, ensure_ascii=False),
+        vehicle_type_code=str(row["vehicle_type"]) if row.get("vehicle_type") is not None else None,
+        entry_station_code=row.get("en_toll_hex"),
+        media_type=str(row["media_type"]) if row.get("media_type") is not None else None,
+        trade_result=str(row["trade_result"]) if row.get("trade_result") is not None else None,
+        obu_trade_result=str(row["obu_trade_result"]) if row.get("obu_trade_result") is not None else None,
+        success_flag=success,
+        success_rule_code=rule,
+        entry_time=row.get("en_time"),
+        vehicle_plate_no=plate_number(row.get("vehicle_plate")),
     )

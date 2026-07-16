@@ -4,7 +4,6 @@ ALIASES = {
     "trans_time": ("transtime", "trans_time"),
     "gantry_id": ("gantryid", "gantry_id"),
     "vehicle_plate": ("vehicleplate", "vehicle_plate"),
-    "vehicle_plate_color": ("vehicleplatecolor", "vehicle_plate_color"),
     "vehicle_type": ("vehicletype", "vehicle_type"),
     "pass_media_type": ("passmediatype", "pass_media_type"),
     "media_type": ("mediatype", "media_type"),

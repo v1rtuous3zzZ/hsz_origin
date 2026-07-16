@@ -44,3 +44,5 @@ class Event:
     obu_trade_result: str | None
     success_flag: bool
     success_rule_code: str
+    entry_time: datetime | None = None
+    vehicle_plate_no: str | None = None
