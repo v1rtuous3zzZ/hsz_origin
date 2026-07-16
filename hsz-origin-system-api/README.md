@@ -12,6 +12,10 @@
 
 API 文档：`http://127.0.0.1:8000/docs`；健康检查：`/health`；系统接口：`/api/v1/system/*`。
 
+## 登录
+
+`POST /api/v1/auth/login` 请求体为 `{"username":"...","password":"..."}`。成功后返回 Bearer JWT、有效秒数与 `must_change_password`。本地初始化管理员账号为 `admin`，首次登录密码为 `123456`，响应会要求改密；部署时必须在首次登录后修改。
+
 ## 报表接口
 
 `GET /api/v1/reports/directions?flow=entry|exit` 返回方向选择框数据。出口中仅 G50 两个方向的 `availability` 为 `AVAILABLE`；其余方向为 `UNAVAILABLE`，表示当前数据不可达或待确认。
