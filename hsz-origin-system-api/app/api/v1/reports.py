@@ -54,6 +54,10 @@ def _direction_filter(direction: str) -> str:
 
 @router.get("/directions")
 def directions(flow: str = Query(pattern="^(entry|exit)$"), db: Session = Depends(get_db)) -> dict:
+    return {"items": _directions(db, flow)}
+
+
+def _directions(db: Session, flow: str) -> list[dict]:
     direction_where = "object_name LIKE '%进入本路段'" if flow == "entry" else "object_name LIKE '%驶出本路段'"
     availability = "'AVAILABLE'" if flow == "entry" else "CASE WHEN object_name LIKE 'G50%' THEN 'AVAILABLE' ELSE 'UNAVAILABLE' END"
     rows = db.execute(
@@ -62,7 +66,16 @@ def directions(flow: str = Query(pattern="^(entry|exit)$"), db: Session = Depend
             f"FROM t_stat_object WHERE enabled = 1 AND {direction_where} ORDER BY object_no"
         )
     ).mappings()
-    return {"items": [dict(row) for row in rows]}
+    return [dict(row) for row in rows]
+
+
+@router.get("/options")
+def report_options(db: Session = Depends(get_db)) -> dict:
+    return {
+        "entry_directions": _directions(db, "entry"),
+        "exit_directions": _directions(db, "exit"),
+        "time_granularities": [item.value for item in Granularity],
+    }
 
 
 def _page(db: Session, grouped: str, parameters: dict, page: int, page_size: int, order_by: str) -> dict:

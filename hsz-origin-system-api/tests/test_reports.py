@@ -70,6 +70,17 @@ def test_exit_direction_list_marks_non_g50_directions_unavailable() -> None:
     assert all(item["availability"] == "UNAVAILABLE" for item in items if "G50" not in item["direction_name"])
 
 
+def test_report_options_returns_all_dropdown_values() -> None:
+    with TestClient(app, headers=auth_headers()) as client:
+        response = client.get("/api/v1/reports/options")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["entry_directions"]) == 8
+    assert len(body["exit_directions"]) == 8
+    assert body["time_granularities"] == ["hour", "day", "week", "month", "year"]
+
+
 def test_vehicle_report_returns_type_code_and_paginates() -> None:
     with TestClient(app, headers=auth_headers()) as client:
         response = client.get(
