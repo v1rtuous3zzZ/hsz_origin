@@ -26,6 +26,13 @@ def start_batch(db: Session, job_code: str, job_type: str, start, end) -> tuple[
 
 
 def finish_batch(db: Session, batch_id: int, status: str, metrics: dict, error: str | None = None):
+    metrics = {
+        "source_row_count": 0,
+        "success_event_count": 0,
+        "matched_event_count": 0,
+        "error_count": 0,
+        **metrics,
+    }
     db.execute(
         text(
             "UPDATE t_etl_batch SET status=:status, finished_at=NOW(3), source_row_count=:source_row_count, success_event_count=:success_event_count, matched_event_count=:matched_event_count, error_count=:error_count, error_summary=:error WHERE batch_id=:id"

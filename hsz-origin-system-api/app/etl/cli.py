@@ -1,9 +1,12 @@
 import argparse
 import json
+import logging
 from datetime import datetime
+from pathlib import Path
 
 from app.db.session import SessionLocal
-from app.etl.runner import dry_run, windows
+from app.etl.formal_sync import sync_window
+from app.etl.runner import windows
 from app.etl.source_config import load_mapping, load_sources
 
 
@@ -16,10 +19,18 @@ def add_window_arguments(parser):
     parser.add_argument("--server")
     parser.add_argument("--start", type=parse_time)
     parser.add_argument("--end", type=parse_time)
-    parser.add_argument("--dry-run", action="store_true")
 
 
 def main():
+    Path("logs").mkdir(exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        handlers=[
+            logging.FileHandler("logs/etl.log", encoding="utf-8"),
+            logging.StreamHandler(),
+        ],
+    )
     parser = argparse.ArgumentParser(description="沪苏浙 G50 ETL 独立进程")
     sub = parser.add_subparsers(dest="command", required=True)
     inspect = sub.add_parser("inspect")
@@ -86,21 +97,18 @@ def main():
             return
         if not args.start or not args.end:
             parser.error("--start 与 --end 在本阶段验证中必填")
-        if not args.dry_run:
-            parser.error("本阶段仅允许 --dry-run；正式写入须完成口径确认")
         if (
             args.command == "live"
             and args.source_mode == "legacy-test"
             and not args.allow_legacy_live
         ):
             parser.error("legacy-test live 需要 --allow-legacy-live")
+        if args.source_mode != "remote":
+            parser.error("正式同步仅支持 remote 源服务器")
         if args.command == "backfill":
-            result = [
-                dry_run(db, start, end, args.source_mode, args.server, args.batch_size)
-                for start, end in windows(args.start, args.end, args.window_minutes)
-            ]
+            result = [sync_window(start, end, args.server) for start, end in windows(args.start, args.end, args.window_minutes)]
         else:
-            result = dry_run(db, args.start, args.end, args.source_mode, args.server)
+            result = sync_window(args.start, args.end, args.server)
         print(json.dumps(result, ensure_ascii=False, default=str))
 
 
