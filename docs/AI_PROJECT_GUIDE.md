@@ -48,6 +48,10 @@
 
 Web 与 ETL 分离。推荐 systemd timer 每两小时第 15 分钟启动独立 ETL 脚本；timer 是操作系统调度，不是项目内定时器。调度脚本应按断点、延迟时间和 MySQL `GET_LOCK` 运行，不能调用 HTTP 手动同步接口。
 
+## 前端设计
+
+前端的唯一视觉规范是 `hsz-origin-system-web/DESIGN.md`，由 `npx getdesign@latest add ibm` 安装。所有 UI 改动必须先阅读并遵循其中 IBM Carbon 风格：IBM Blue、IBM Plex Sans、方角、无阴影细边框与扁平企业布局。
+
 ## 验证
 
 ```powershell
