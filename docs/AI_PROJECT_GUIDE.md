@@ -50,7 +50,9 @@ Web 与 ETL 分离。推荐 systemd timer 每两小时第 15 分钟启动独立 
 
 ## 前端设计
 
-前端的唯一视觉规范是 `hsz-origin-system-web/DESIGN.md`，由 `npx getdesign@latest add ibm` 安装。所有 UI 改动必须先阅读并遵循其中 IBM Carbon 风格：IBM Blue、IBM Plex Sans、方角、无阴影细边框与扁平企业布局。
+前端的唯一视觉规范是 `hsz-origin-system-web/DESIGN.md`。该规范以 IBM Carbon 为基础，已经针对本项目的内网报表后台场景定制；所有 UI 改动必须先阅读并遵循。不得照搬 IBM 官网营销页结构，也不得另建冲突的颜色、字体、圆角、阴影或间距体系。
+
+核心原则：IBM Blue、方角、无阴影、细边框、紧凑表格、固定企业后台布局、内网离线资源和桌面端适配。
 
 ## 验证
 
