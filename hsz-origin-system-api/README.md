@@ -2,21 +2,21 @@
 
 ## 环境配置
 
-复制 `.env.example` 为 `.env`，并在本地填写新库连接信息。`.env` 不会被 Git 跟踪。
+复制 `.env.example` 为 `.env`，并在本地填写中心库和源库连接信息。`.env` 不会被 Git 跟踪。
 
 ## 本地启动
 
 ```powershell
-.venv\\Scripts\\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 API 文档：`http://127.0.0.1:8000/docs`；健康检查：`/health`；系统接口：`/api/v1/system/*`。
 
 ## 登录
 
-`POST /api/v1/auth/login` 请求体为 `{"username":"...","password":"..."}`。成功后返回 Bearer JWT、有效秒数与 `must_change_password`。本地初始化管理员账号为 `admin`，首次登录密码为 `123456`，响应会要求改密；部署时必须在首次登录后修改。
+`POST /api/v1/auth/login` 请求体为 `{"username":"...","password":"..."}`。成功后返回 Bearer JWT、有效秒数与 `must_change_password`。本地初始化管理员账号为 `admin`，首次登录密码为 `123456`，部署时必须修改。
 
-除 `/health` 和登录接口外，所有 `/api/v1/*` 业务接口都必须提供 `Authorization: Bearer <access_token>`。JWT 不保存服务端会话，因此同一账号可在多个客户端同时登录。
+除 `/health` 和登录接口外，所有 `/api/v1/*` 业务接口都必须提供 `Authorization: Bearer <access_token>`。
 
 创建或重置管理员账号：
 
@@ -24,23 +24,40 @@ API 文档：`http://127.0.0.1:8000/docs`；健康检查：`/health`；系统接
 .venv\Scripts\python.exe -m app.admin --username admin --password 123456 --display-name 系统管理员
 ```
 
-## 报表接口
+## ETL 运行方式
 
-`GET /api/v1/reports/directions?flow=entry|exit` 返回方向选择框数据。出口中仅 G50 两个方向的 `availability` 为 `AVAILABLE`；其余方向为 `UNAVAILABLE`，表示当前数据不可达或待确认。
+统一入口：
 
-四个统计接口为 `entry-flow`、`exit-flow`、`vehicle-types` 与 `entry-stations`。它们均接受 `start`、`end`、`granularity`（`hour`、`day`、`week`、`month`、`year`）、可重复的 `direction_ids`、`page` 和 `page_size` 参数，响应为 `{page, page_size, total, items}`。`vehicle-types` 返回车型编码，名称由前端枚举；`entry-stations` 在收费站字典缺名时返回 `station_name: "未知"`。
+```powershell
+# 同步最近一个完整的两小时窗口
+.venv\Scripts\python.exe -m app.etl.cli live-once
 
-## 手动同步
+# 常驻循环，每分钟检查一次，只在新窗口出现时读取门架
+.venv\Scripts\python.exe -m app.etl.cli live
 
-`GET /api/v1/etl/batches` 分页查看同步批次日志。`POST /api/v1/etl/manual-sync` 接受 `{"start":"...","end":"...","rebuild_facts":false}`，按连续 2 小时窗口同步；窗口跨月时自动切分。每个窗口读取实时交易表，仅为实时数据不完整的物理门架补读当月历史表，并按源服务器与交易主键去重。源连接在明细读取完成后立即关闭，后续转换、匹配和写入只访问中心库。手动批量补数默认不在每个窗口重建事实表，可传 `rebuild_facts=true` 用于小范围补数；大范围历史补数应先写 ODS/命中，完成后统一重建事实。
+# 循环补历史数据；默认两小时一个窗口、跳过已成功窗口、窗口间休眠 2 秒
+.venv\Scripts\python.exe -m app.etl.cli backfill --start 2026-01-01T00:00:00 --end 2026-02-01T00:00:00
+
+# 只重建中心库事实，不访问门架
+.venv\Scripts\python.exe -m app.etl.cli rebuild-facts --start 2026-01-01T00:00:00 --end 2026-02-01T00:00:00
+```
+
+兼容原 systemd timer 的 `scripts/run_live_sync.py` 仍可使用；`scripts/run_sync.py` 是统一脚本包装。
+
+同步分为两个阶段：
+
+1. 门架采集：使用 `(GantryId, TransTime, ...)` 索引和流式游标读取；实时表不完整时仅补读对应物理门架的月表；读取完成立即关闭源连接。
+2. 中心处理：按 `TradeId` 去重、标准化、分批写入 ODS/命中并重建事实。中心库失败只重试这一阶段，不重新访问门架。
+
+实时同步和历史补数通过中心库命名锁串行化“门架读取阶段”，避免两个任务同时压门架；中心库处理阶段不占用该锁。不同物理服务器最多按 `HSZ_ETL_MAX_WORKERS` 并行，同一 IP 始终串行。
+
+历史补数默认：过去月份直接读月表；当前月份使用实时表并只为覆盖不完整的物理门架补读月表。全部窗口成功后按月统一重建事实，不在每个窗口重复重建。
+
+`POST /api/v1/etl/manual-sync` 支持 `start`、`end`、`rebuild_facts`、`window_minutes`、`sleep_seconds`、`resume` 和 `continue_on_error`。
 
 ## 测试
 
 ```powershell
-.venv\\Scripts\\python.exe -m pytest
-.venv\\Scripts\\ruff.exe check .
+.venv\Scripts\python.exe -m pytest
+.venv\Scripts\ruff.exe check .
 ```
-
-## ETL
-
-ETL 是独立 CLI 进程，绝不在 FastAPI startup、lifespan 或 BackgroundTasks 中启动。源库读取并发由 `HSZ_ETL_MAX_WORKERS` 控制，默认 `4`。同步不使用跨任务 MySQL 命名锁，幂等由 ODS/命中唯一键保证。历史回填可使用 `python -m app.etl.cli backfill --source-mode remote --start ... --end ... --window-minutes 120 --job-name ... --skip-fact-rebuild` 延后事实重建。
