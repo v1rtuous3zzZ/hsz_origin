@@ -1,3 +1,4 @@
+import math
 from datetime import datetime
 
 import pymysql
@@ -10,11 +11,13 @@ from app.etl.source_schema import resolve_columns
 
 
 def source_connection(server: SourceServer):
+    """创建门架只读连接；流式游标避免一次性缓存全部结果。"""
     with engine.connect() as connection:
         config = (
             connection.execute(
                 text(
-                    "SELECT port, username, password, db_name, charset FROM t_source_db_config ORDER BY config_id LIMIT 1"
+                    "SELECT port, username, password, db_name, charset "
+                    "FROM t_source_db_config ORDER BY config_id LIMIT 1"
                 )
             )
             .mappings()
@@ -22,7 +25,8 @@ def source_connection(server: SourceServer):
         )
     if not config:
         raise RuntimeError("中心库缺少 t_source_db_config 门架源库连接配置")
-    return pymysql.connect(
+
+    connection = pymysql.connect(
         host=server.host_address,
         port=config["port"],
         user=config["username"],
@@ -30,9 +34,14 @@ def source_connection(server: SourceServer):
         database=config["db_name"],
         charset=config["charset"],
         cursorclass=SSDictCursor,
+        autocommit=True,
         connect_timeout=10,
         read_timeout=300,
+        write_timeout=30,
     )
+    with connection.cursor() as cursor:
+        cursor.execute("SET SESSION TRANSACTION READ ONLY")
+    return connection
 
 
 def read_rows(
@@ -44,10 +53,17 @@ def read_rows(
     end,
     batch_size: int,
 ):
-    """Read one bounded source slice through the (GantryId, TransTime, ...) index."""
+    """按门架和有界时间范围走 (GantryId, TransTime, ...) 索引读取。"""
+    if not physical_codes:
+        return
     select = ", ".join(f"`{actual}` AS `{canonical}`" for canonical, actual in columns.items())
     placeholders = ", ".join(["%s"] * len(physical_codes))
-    sql = f"SELECT {select} FROM `{table}` WHERE `{columns['trans_time']}` >= %s AND `{columns['trans_time']}` < %s AND `{columns['gantry_id']}` IN ({placeholders})"
+    sql = (
+        f"SELECT {select} FROM `{table}` "
+        f"WHERE `{columns['trans_time']}` >= %s "
+        f"AND `{columns['trans_time']}` < %s "
+        f"AND `{columns['gantry_id']}` IN ({placeholders})"
+    )
     with connection.cursor() as cursor:
         cursor.execute(sql, [start, end, *physical_codes])
         while rows := cursor.fetchmany(batch_size):
@@ -62,12 +78,16 @@ def inspect_remote(connection, table: str) -> tuple[list[str], list[dict]]:
         return columns, []
 
 
+def _segment_count(start: datetime, end: datetime) -> int:
+    return max(1, math.ceil((end - start).total_seconds() / 600))
+
+
 def realtime_window_complete(rows: list[dict], start: datetime, end: datetime) -> bool:
     """实时数据覆盖窗口的每个十分钟片段时，才可不查询历史表。"""
-    expected_segments = int((end - start).total_seconds() // 600)
+    expected_segments = _segment_count(start, end)
     segments = set()
     for row in rows:
-        value = row["trans_time"]
+        value = row.get("trans_time")
         if not isinstance(value, datetime) or not start <= value < end:
             continue
         segments.add(int((value - start).total_seconds() // 600))
@@ -77,16 +97,20 @@ def realtime_window_complete(rows: list[dict], start: datetime, end: datetime) -
 def incomplete_realtime_physical_codes(
     rows: list[dict], physical_codes: list[str], start: datetime, end: datetime
 ) -> list[str]:
-    """返回未覆盖完整两小时窗口的物理门架。"""
-    by_physical: dict[str, list[dict]] = {code: [] for code in physical_codes}
+    """按每条物理门架返回实时覆盖不完整的门架编号。"""
+    expected_segments = _segment_count(start, end)
+    segments_by_physical: dict[str, set[int]] = {code: set() for code in physical_codes}
     for row in rows:
         code = str(row.get("gantry_id"))
-        if code in by_physical:
-            by_physical[code].append(row)
+        value = row.get("trans_time")
+        if code not in segments_by_physical or not isinstance(value, datetime):
+            continue
+        if start <= value < end:
+            segments_by_physical[code].add(int((value - start).total_seconds() // 600))
     return [
         code
-        for code, physical_rows in by_physical.items()
-        if not realtime_window_complete(physical_rows, start, end)
+        for code in physical_codes
+        if len(segments_by_physical[code]) != expected_segments
     ]
 
 
@@ -97,54 +121,84 @@ def realtime_complete_windows(
     start: datetime,
     end: datetime,
 ) -> set[datetime]:
-    """只扫描时间桶，找出实时表连续覆盖的两小时窗口。"""
+    """返回所有物理门架均覆盖完整十二个十分钟片段的两小时窗口。"""
     columns, _ = inspect_remote(connection, table)
     resolved = resolve_columns(columns)
     placeholders = ", ".join(["%s"] * len(physical_codes))
+    time_col = resolved["trans_time"]
+    gantry_col = resolved["gantry_id"]
     sql = (
-        f"SELECT DATE(`{resolved['trans_time']}`) AS stat_date, "
-        f"FLOOR(HOUR(`{resolved['trans_time']}`) / 2) AS hour_group, "
-        f"MOD(HOUR(`{resolved['trans_time']}`), 2) * 6 + "
-        f"FLOOR(MINUTE(`{resolved['trans_time']}`) / 10) AS segment "
-        f"FROM `{table}` WHERE `{resolved['trans_time']}` >= %s "
-        f"AND `{resolved['trans_time']}` < %s "
-        f"AND `{resolved['gantry_id']}` IN ({placeholders}) "
-        "GROUP BY DATE(`{0}`), FLOOR(HOUR(`{0}`) / 2), "
-        "MOD(HOUR(`{0}`), 2), FLOOR(MINUTE(`{0}`) / 10)"
-    ).format(resolved["trans_time"])
-    windows: dict[datetime, set[int]] = {}
+        f"SELECT `{gantry_col}` AS gantry_id, DATE(`{time_col}`) AS stat_date, "
+        f"FLOOR(HOUR(`{time_col}`) / 2) AS hour_group, "
+        f"MOD(HOUR(`{time_col}`), 2) * 6 + "
+        f"FLOOR(MINUTE(`{time_col}`) / 10) AS segment "
+        f"FROM `{table}` WHERE `{time_col}` >= %s "
+        f"AND `{time_col}` < %s "
+        f"AND `{gantry_col}` IN ({placeholders}) "
+        f"GROUP BY `{gantry_col}`, DATE(`{time_col}`), "
+        f"FLOOR(HOUR(`{time_col}`) / 2), MOD(HOUR(`{time_col}`), 2), "
+        f"FLOOR(MINUTE(`{time_col}`) / 10)"
+    )
+    coverage: dict[datetime, dict[str, set[int]]] = {}
     with connection.cursor() as cursor:
         cursor.execute(sql, [start, end, *physical_codes])
         for row in cursor.fetchall():
             window_start = datetime.combine(row["stat_date"], datetime.min.time()).replace(
                 hour=int(row["hour_group"]) * 2
             )
-            windows.setdefault(window_start, set()).add(int(row["segment"]))
-    return {window_start for window_start, segments in windows.items() if len(segments) == 12}
+            coverage.setdefault(window_start, {}).setdefault(
+                str(row["gantry_id"]), set()
+            ).add(int(row["segment"]))
+
+    expected = set(physical_codes)
+    return {
+        window_start
+        for window_start, by_gantry in coverage.items()
+        if set(by_gantry) == expected
+        and all(len(by_gantry[code]) == 12 for code in physical_codes)
+    }
 
 
-def window_counts(connection, tables: list[str], physical_codes: list[str], start, end) -> dict:
-    """按两小时窗口汇总源端交易数，用于凌晨核对，不返回交易明细。"""
-    counts = {}
+def window_counts(
+    connection,
+    tables: list[str],
+    physical_codes: list[str],
+    start,
+    end,
+) -> dict[datetime, int]:
+    """跨实时表/月表按 TradeId 去重后汇总两小时源端数量。"""
+    if not tables or not physical_codes:
+        return {}
+
+    selects = []
+    params = []
     for table in tables:
         columns, _ = inspect_remote(connection, table)
         resolved = resolve_columns(columns)
         placeholders = ", ".join(["%s"] * len(physical_codes))
-        sql = (
-            f"SELECT DATE(`{resolved['trans_time']}`) AS stat_date, "
-            f"FLOOR(HOUR(`{resolved['trans_time']}`) / 2) AS hour_group, "
-            f"COUNT(DISTINCT `{resolved['trade_id']}`) AS row_count "
+        selects.append(
+            f"SELECT `{resolved['trade_id']}` AS trade_id, "
+            f"`{resolved['trans_time']}` AS trans_time "
             f"FROM `{table}` WHERE `{resolved['trans_time']}` >= %s "
             f"AND `{resolved['trans_time']}` < %s "
-            f"AND `{resolved['gantry_id']}` IN ({placeholders}) "
-            f"GROUP BY DATE(`{resolved['trans_time']}`), FLOOR(HOUR(`{resolved['trans_time']}`) / 2)"
+            f"AND `{resolved['gantry_id']}` IN ({placeholders})"
         )
-        with connection.cursor() as cursor:
-            cursor.execute(sql, [start, end, *physical_codes])
-            for row in cursor.fetchall():
-                window_start = datetime.combine(
-                    row["stat_date"],
-                    datetime.min.time(),
-                ).replace(hour=int(row["hour_group"]) * 2)
-                counts[window_start] = max(counts.get(window_start, 0), row["row_count"])
+        params.extend([start, end, *physical_codes])
+
+    union_sql = " UNION ALL ".join(selects)
+    sql = (
+        "SELECT DATE(trans_time) AS stat_date, "
+        "FLOOR(HOUR(trans_time) / 2) AS hour_group, "
+        "COUNT(DISTINCT trade_id) AS row_count "
+        f"FROM ({union_sql}) source_rows "
+        "GROUP BY DATE(trans_time), FLOOR(HOUR(trans_time) / 2)"
+    )
+    counts = {}
+    with connection.cursor() as cursor:
+        cursor.execute(sql, params)
+        for row in cursor.fetchall():
+            window_start = datetime.combine(
+                row["stat_date"], datetime.min.time()
+            ).replace(hour=int(row["hour_group"]) * 2)
+            counts[window_start] = int(row["row_count"])
     return counts
