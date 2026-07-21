@@ -5,4 +5,5 @@ pydantic-settings
 pyjwt
 pymysql
 sqlalchemy
+tzdata
 uvicorn
