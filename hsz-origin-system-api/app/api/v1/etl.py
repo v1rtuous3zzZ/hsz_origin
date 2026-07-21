@@ -1,12 +1,13 @@
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.db.dependencies import get_db
 from app.etl.formal_sync import sync_window
+from app.etl.orchestrator import iter_windows, sync_range
 
 router = APIRouter(prefix="/etl", tags=["etl"])
 
@@ -15,17 +16,14 @@ class ManualSyncRequest(BaseModel):
     start: datetime
     end: datetime
     rebuild_facts: bool = False
+    window_minutes: int = Field(default=120, ge=10, le=1440)
+    sleep_seconds: int = Field(default=1, ge=0, le=60)
+    resume: bool = True
+    continue_on_error: bool = True
 
 
 def two_hour_windows(start: datetime, end: datetime):
-    current = start
-    while current < end:
-        next_month = (current.replace(day=28) + timedelta(days=4)).replace(
-            day=1, hour=0, minute=0, second=0, microsecond=0
-        )
-        current_end = min(current + timedelta(hours=2), next_month, end)
-        yield current, current_end
-        current = current_end
+    yield from iter_windows(start, end, 120)
 
 
 def missing_windows(
@@ -68,7 +66,9 @@ def batches(
     total = db.execute(text(f"SELECT COUNT(*) FROM t_etl_batch{filters}"), params).scalar_one()
     rows = db.execute(
         text(
-            "SELECT batch_id,batch_no,job_code,job_type,status,window_start,window_end,started_at,finished_at,source_row_count,success_event_count,matched_event_count,error_count,error_summary FROM t_etl_batch"
+            "SELECT batch_id,batch_no,job_code,job_type,status,window_start,window_end,"
+            "started_at,finished_at,source_row_count,success_event_count,"
+            "matched_event_count,error_count,error_summary FROM t_etl_batch"
             + filters
             + " ORDER BY batch_id DESC LIMIT :limit OFFSET :offset"
         ),
@@ -78,7 +78,11 @@ def batches(
     if items:
         source_rows = db.execute(
             text(
-                "SELECT s.batch_id,s.source_server_id,s.status,s.started_at,s.finished_at,s.source_row_count,s.success_event_count,s.matched_event_count,s.error_count,s.error_summary,server.server_code FROM t_etl_batch_source s JOIN t_source_server server ON server.source_server_id=s.source_server_id WHERE s.batch_id IN ("
+                "SELECT s.batch_id,s.source_server_id,s.status,s.started_at,s.finished_at,"
+                "s.source_row_count,s.success_event_count,s.matched_event_count,s.error_count,"
+                "s.error_summary,server.server_code FROM t_etl_batch_source s "
+                "JOIN t_source_server server "
+                "ON server.source_server_id=s.source_server_id WHERE s.batch_id IN ("
                 + ",".join(f":batch_{index}" for index in range(len(items)))
                 + ") ORDER BY s.batch_source_id"
             ),
@@ -120,7 +124,11 @@ def retry_source(batch_id: int, source_server_id: int, db: Session = Depends(get
     source = (
         db.execute(
             text(
-                "SELECT b.window_start,b.window_end,s.status,server.server_code FROM t_etl_batch b JOIN t_etl_batch_source s ON s.batch_id=b.batch_id JOIN t_source_server server ON server.source_server_id=s.source_server_id WHERE b.batch_id=:batch AND s.source_server_id=:source"
+                "SELECT b.window_start,b.window_end,s.status,server.server_code "
+                "FROM t_etl_batch b JOIN t_etl_batch_source s ON s.batch_id=b.batch_id "
+                "JOIN t_source_server server "
+                "ON server.source_server_id=s.source_server_id "
+                "WHERE b.batch_id=:batch AND s.source_server_id=:source"
             ),
             {"batch": batch_id, "source": source_server_id},
         )
@@ -133,7 +141,9 @@ def retry_source(batch_id: int, source_server_id: int, db: Session = Depends(get
     if result["status"] == "SUCCESS":
         db.execute(
             text(
-                "UPDATE t_etl_batch_source SET status='SUCCESS',finished_at=NOW(3),error_count=0,error_summary=NULL WHERE batch_id=:batch AND source_server_id=:source"
+                "UPDATE t_etl_batch_source SET status='SUCCESS',finished_at=NOW(3),"
+                "error_count=0,error_summary=NULL "
+                "WHERE batch_id=:batch AND source_server_id=:source"
             ),
             {"batch": batch_id, "source": source_server_id},
         )
@@ -146,7 +156,8 @@ def retry_source(batch_id: int, source_server_id: int, db: Session = Depends(get
         if not remaining:
             db.execute(
                 text(
-                    "UPDATE t_etl_batch SET status='SUCCESS',finished_at=NOW(3),error_summary=NULL WHERE batch_id=:batch"
+                    "UPDATE t_etl_batch SET status='SUCCESS',finished_at=NOW(3),"
+                    "error_summary=NULL WHERE batch_id=:batch"
                 ),
                 {"batch": batch_id},
             )
@@ -159,8 +170,12 @@ def manual_sync(payload: ManualSyncRequest) -> dict:
         raise HTTPException(status_code=422, detail="结束时间必须晚于开始时间")
     if payload.end > datetime.now(payload.end.tzinfo):
         raise HTTPException(status_code=422, detail="结束时间不能晚于当前时间")
-    results = [
-        sync_window(start, end, rebuild_facts=payload.rebuild_facts)
-        for start, end in two_hour_windows(payload.start, payload.end)
-    ]
-    return {"window_count": len(results), "batches": results}
+    return sync_range(
+        payload.start,
+        payload.end,
+        window_minutes=payload.window_minutes,
+        sleep_seconds=payload.sleep_seconds,
+        resume=payload.resume,
+        continue_on_error=payload.continue_on_error,
+        rebuild_facts=payload.rebuild_facts,
+    )
