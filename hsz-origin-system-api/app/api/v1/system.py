@@ -38,9 +38,7 @@ def gantry_summary(db: Session = Depends(get_db)) -> dict[str, int]:
     }
     try:
         return {
-            key: db.execute(
-                text(f"SELECT COUNT(*) FROM {table} WHERE enabled = 1")
-            ).scalar_one()
+            key: db.execute(text(f"SELECT COUNT(*) FROM {table} WHERE enabled = 1")).scalar_one()
             for key, table in tables.items()
         }
     except SQLAlchemyError as error:

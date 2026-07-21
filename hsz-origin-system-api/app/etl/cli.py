@@ -47,6 +47,7 @@ def main():
     backfill.add_argument("--max-workers", type=int)
     backfill.add_argument("--sleep-seconds", type=int)
     backfill.add_argument("--reset-checkpoint", action="store_true")
+    backfill.add_argument("--skip-fact-rebuild", action="store_true")
     live = sub.add_parser("live")
     add_window_arguments(live)
     live.add_argument("--poll-seconds", type=int, default=60)
@@ -106,7 +107,10 @@ def main():
         if args.source_mode != "remote":
             parser.error("正式同步仅支持 remote 源服务器")
         if args.command == "backfill":
-            result = [sync_window(start, end, args.server) for start, end in windows(args.start, args.end, args.window_minutes)]
+            result = [
+                sync_window(start, end, args.server, rebuild_facts=not args.skip_fact_rebuild)
+                for start, end in windows(args.start, args.end, args.window_minutes)
+            ]
         else:
             result = sync_window(args.start, args.end, args.server)
         print(json.dumps(result, ensure_ascii=False, default=str))

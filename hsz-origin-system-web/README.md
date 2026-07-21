@@ -2,7 +2,7 @@
 
 ## 环境配置
 
-开发 API 地址由 `.env.development` 的 `VITE_API_BASE_URL` 配置；示例见 `.env.example`。
+开发 API 地址由 `.env.development` 的 `VITE_API_BASE_URL` 配置；生产构建使用 `.env.production` 的同名变量，通过 Nginx 的 `/api/` 反向代理访问 API。示例见 `.env.example`。
 
 ## 本地启动
 
@@ -18,4 +18,4 @@ npm run dev -- --host 127.0.0.1
 npm run build
 ```
 
-Dashboard 仅调用 `/system/gantry-summary` 展示基础数量；认证接口未确认，登录页明确提示待接入。
+前端提供管理员登录以及入口流量、出口流量、车型和入口收费站四个报表页面。接口地址由 `VITE_API_BASE_URL` 配置；导出 Excel 接口尚未接入。

@@ -56,7 +56,9 @@ def normalize(
         entry_station_code=row.get("en_toll_hex"),
         media_type=str(row["media_type"]) if row.get("media_type") is not None else None,
         trade_result=str(row["trade_result"]) if row.get("trade_result") is not None else None,
-        obu_trade_result=str(row["obu_trade_result"]) if row.get("obu_trade_result") is not None else None,
+        obu_trade_result=str(row["obu_trade_result"])
+        if row.get("obu_trade_result") is not None
+        else None,
         success_flag=success,
         success_rule_code=rule,
         entry_time=row.get("en_time"),

@@ -18,13 +18,17 @@ class LoginRequest(BaseModel):
 
 @router.post("/login")
 def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)) -> dict:
-    user = db.execute(
-        text(
-            "SELECT user_id, username, password_hash, enabled, must_change_password, "
-            "failed_login_count, locked_until FROM t_user WHERE username = :username"
-        ),
-        {"username": payload.username},
-    ).mappings().first()
+    user = (
+        db.execute(
+            text(
+                "SELECT user_id, username, password_hash, enabled, must_change_password, "
+                "failed_login_count, locked_until FROM t_user WHERE username = :username"
+            ),
+            {"username": payload.username},
+        )
+        .mappings()
+        .first()
+    )
     now = datetime.now()
     invalid = (
         user is None

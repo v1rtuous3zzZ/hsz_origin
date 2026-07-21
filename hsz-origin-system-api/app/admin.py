@@ -15,7 +15,11 @@ def upsert_user(db: Session, username: str, password: str, display_name: str) ->
             "ON DUPLICATE KEY UPDATE password_hash = VALUES(password_hash), display_name = VALUES(display_name), "
             "enabled = 1, must_change_password = 1, failed_login_count = 0, locked_until = NULL"
         ),
-        {"username": username, "password_hash": hash_password(password), "display_name": display_name},
+        {
+            "username": username,
+            "password_hash": hash_password(password),
+            "display_name": display_name,
+        },
     )
 
 

@@ -1,9 +1,12 @@
 from datetime import datetime
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from app.api.v1.etl import two_hour_windows
+from app.api.v1.etl import missing_windows, two_hour_windows
 from app.core.security import create_access_token
+from app.etl.formal_sync import sync_window
+from app.etl.reconcile import completed_windows
 from app.main import app
 
 
@@ -24,3 +27,90 @@ def test_batch_log_api_requires_login() -> None:
 
     assert response.status_code == 200
     assert "items" in response.json()
+
+
+def test_manual_sync_skips_fact_rebuild_by_default() -> None:
+    token, _ = create_access_token(1, "admin")
+    with (
+        TestClient(app) as client,
+        patch("app.api.v1.etl.sync_window", return_value={"status": "SUCCESS"}) as sync,
+    ):
+        response = client.post(
+            "/api/v1/etl/manual-sync",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"start": "2026-07-01T00:00:00", "end": "2026-07-01T02:00:00"},
+        )
+
+    assert response.status_code == 200
+    sync.assert_called_once_with(
+        datetime(2026, 7, 1),
+        datetime(2026, 7, 1, 2),
+        rebuild_facts=False,
+    )
+
+
+def test_manual_sync_can_request_fact_rebuild() -> None:
+    token, _ = create_access_token(1, "admin")
+    with (
+        TestClient(app) as client,
+        patch("app.api.v1.etl.sync_window", return_value={"status": "SUCCESS"}) as sync,
+    ):
+        response = client.post(
+            "/api/v1/etl/manual-sync",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "start": "2026-07-01T00:00:00",
+                "end": "2026-07-01T02:00:00",
+                "rebuild_facts": True,
+            },
+        )
+
+    assert response.status_code == 200
+    sync.assert_called_once_with(
+        datetime(2026, 7, 1),
+        datetime(2026, 7, 1, 2),
+        rebuild_facts=True,
+    )
+
+
+def test_missing_windows_reports_only_uncovered_windows() -> None:
+    start = datetime(2026, 7, 1, 8)
+    end = datetime(2026, 7, 1, 14)
+
+    assert missing_windows(
+        start,
+        end,
+        [
+            (datetime(2026, 7, 1, 8), datetime(2026, 7, 1, 10)),
+            (datetime(2026, 7, 1, 12), datetime(2026, 7, 1, 14)),
+        ],
+    ) == [{"start": datetime(2026, 7, 1, 10), "end": datetime(2026, 7, 1, 12)}]
+
+
+def test_sync_window_retries_once_then_returns_failed_result() -> None:
+    with (
+        patch(
+            "app.etl.formal_sync._sync_window", side_effect=RuntimeError("source timeout")
+        ) as sync,
+    ):
+        result = sync_window(datetime(2026, 7, 1), datetime(2026, 7, 1, 2))
+
+    assert sync.call_count == 2
+    assert result == {"status": "FAILED", "error": "source timeout", "attempt_count": 2}
+
+
+def test_sync_window_accepts_window_ending_at_month_boundary() -> None:
+    expected = {"status": "SUCCESS"}
+    with patch("app.etl.formal_sync._sync_window", return_value=expected) as sync:
+        result = sync_window(datetime(2026, 7, 31, 22), datetime(2026, 8, 1))
+
+    assert result == expected
+    sync.assert_called_once()
+
+
+def test_nightly_reconcile_uses_completed_two_hour_windows_only() -> None:
+    windows = list(completed_windows(datetime(2026, 7, 19, 4, 15), lookback_days=1))
+
+    assert windows[0] == (datetime(2026, 7, 18), datetime(2026, 7, 18, 2))
+    assert windows[-1] == (datetime(2026, 7, 18, 22), datetime(2026, 7, 19))
+    assert len(windows) == 12

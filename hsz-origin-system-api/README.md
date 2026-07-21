@@ -32,7 +32,7 @@ API 文档：`http://127.0.0.1:8000/docs`；健康检查：`/health`；系统接
 
 ## 手动同步
 
-`GET /api/v1/etl/batches` 分页查看同步批次日志。`POST /api/v1/etl/manual-sync` 接受 `{"start":"...","end":"..."}`，按连续 2 小时窗口同步；窗口跨月时自动切分。每个窗口先读实时交易表，再读当月历史表，并按源服务器与交易主键去重。
+`GET /api/v1/etl/batches` 分页查看同步批次日志。`POST /api/v1/etl/manual-sync` 接受 `{"start":"...","end":"...","rebuild_facts":false}`，按连续 2 小时窗口同步；窗口跨月时自动切分。每个窗口读取实时交易表，仅为实时数据不完整的物理门架补读当月历史表，并按源服务器与交易主键去重。源连接在明细读取完成后立即关闭，后续转换、匹配和写入只访问中心库。手动批量补数默认不在每个窗口重建事实表，可传 `rebuild_facts=true` 用于小范围补数；大范围历史补数应先写 ODS/命中，完成后统一重建事实。
 
 ## 测试
 
@@ -43,4 +43,4 @@ API 文档：`http://127.0.0.1:8000/docs`；健康检查：`/health`；系统接
 
 ## ETL
 
-ETL 是独立 CLI 进程，绝不在 FastAPI startup、lifespan 或 BackgroundTasks 中启动。本阶段仅保留 `python -m app.etl.cli --help` 的命令骨架。
+ETL 是独立 CLI 进程，绝不在 FastAPI startup、lifespan 或 BackgroundTasks 中启动。源库读取并发由 `HSZ_ETL_MAX_WORKERS` 控制，默认 `4`。同步不使用跨任务 MySQL 命名锁，幂等由 ODS/命中唯一键保证。历史回填可使用 `python -m app.etl.cli backfill --source-mode remote --start ... --end ... --window-minutes 120 --job-name ... --skip-fact-rebuild` 延后事实重建。

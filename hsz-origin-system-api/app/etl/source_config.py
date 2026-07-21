@@ -17,7 +17,7 @@ def load_sources(db: Session, server_code: str | None = None) -> list[SourceServ
 def load_mapping(db: Session) -> dict[int, dict[str, str]]:
     rows = db.execute(
         text(
-            "SELECT p.source_server_id, p.physical_gantry_code, r.logical_gantry_hex FROM t_physical_gantry p JOIN t_source_server s ON s.source_server_id=p.source_server_id JOIN t_legacy_gantry_info legacy ON legacy.gantry_id=p.physical_gantry_code JOIN t_physical_logical_gantry_rel r ON r.physical_gantry_id=p.physical_gantry_id WHERE p.enabled=1 AND s.enabled=1 AND s.host_address LIKE '10.13.%' AND r.enabled=1 AND r.valid_from<=NOW(3) AND (r.valid_to IS NULL OR r.valid_to>NOW(3))"
+            "SELECT p.source_server_id, p.physical_gantry_code, r.logical_gantry_hex FROM t_physical_gantry p JOIN t_source_server s ON s.source_server_id=p.source_server_id JOIN t_physical_logical_gantry_rel r ON r.physical_gantry_id=p.physical_gantry_id WHERE p.enabled=1 AND p.collection_enabled=1 AND s.enabled=1 AND s.host_address LIKE '10.13.%' AND r.enabled=1 AND r.valid_from<=NOW(3) AND (r.valid_to IS NULL OR r.valid_to>NOW(3))"
         )
     ).mappings()
     result: dict[int, dict[str, str]] = {}

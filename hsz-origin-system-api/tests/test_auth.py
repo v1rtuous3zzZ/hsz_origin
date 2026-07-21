@@ -26,7 +26,9 @@ def test_login_returns_a_token_for_initialized_user() -> None:
         upsert_user(db, username, password, "Login test user")
     try:
         with TestClient(app) as client:
-            response = client.post("/api/v1/auth/login", json={"username": username, "password": password})
+            response = client.post(
+                "/api/v1/auth/login", json={"username": username, "password": password}
+            )
 
         assert response.status_code == 200
         body = response.json()
@@ -36,4 +38,6 @@ def test_login_returns_a_token_for_initialized_user() -> None:
         assert body["must_change_password"] is True
     finally:
         with SessionLocal.begin() as db:
-            db.execute(text("DELETE FROM t_user WHERE username = :username"), {"username": username})
+            db.execute(
+                text("DELETE FROM t_user WHERE username = :username"), {"username": username}
+            )

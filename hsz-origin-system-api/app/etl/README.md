@@ -13,11 +13,11 @@ python -m app.etl.cli status
 
 源凭据由 `CREDENTIAL_KEY_USER` 和 `CREDENTIAL_KEY_PASSWORD` 环境变量提供，例如 `SOURCE_DB_DEFAULT_USER`。不提供凭据时 remote 读取会失败，不会回退到默认账号。
 
-实时与历史分别使用 MySQL 锁；断点按 `job_code + source_server_id` 保存，只有全窗口成功且事实重算成功后才推进。事件键是 `SHA256(source_server_id|source_table_name|source_trade_id)`，月度 ODS 和命中表用唯一键实现幂等。
+同步不使用跨任务 MySQL 命名锁；断点按 `job_code + source_server_id` 保存，只有全窗口成功且事实重算成功后才推进。事件键是 `SHA256(source_server_id|source_trade_id)`，月度 ODS 和命中表用唯一键实现幂等。源连接只用于读取明细并立即释放，转换、批量匹配写入和事实重建都在中心库完成。
 
 每个物理门架都由中心库动态映射；同一逻辑 HEX 的两个物理门架都读取并自然聚合，绝不按逻辑门架去重。
 
-当前远程网络只可访问沿江公司 `10.13.*` 网段。`t_legacy_gantry_info` 是项目库内的 32 条门架母表参考；不在该母表的中心门架不得默认作为实际采集源。已知可取得的出本路段数据可能仅覆盖 G50，外部方向必须如实报告为不可达或待确认。
+当前远程网络只可访问沿江公司 `10.13.*` 网段。`t_physical_gantry.collection_enabled=1` 的 32 条门架是本项目正式采集范围，其中当前可达范围为 26 条；未纳入该范围或位于不可达网段的门架不得默认作为实际采集源。已知可取得的出本路段数据可能仅覆盖 G50，外部方向必须如实报告为不可达或待确认。
 
 事实重算只能由协调器在全部源成功后集中执行，不能在每个源线程中累加。当前实现提供安全的 dry-run 验证路径；正式写入前仍须确认成功交易口径、上一门架介质选择和所有事实表重算 SQL。
 

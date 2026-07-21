@@ -6,7 +6,7 @@ from datetime import timedelta
 @dataclass(frozen=True)
 class EtlSettings:
     batch_size: int = int(os.getenv("HSZ_ETL_BATCH_SIZE", "2000"))
-    max_workers: int = int(os.getenv("HSZ_ETL_MAX_WORKERS", "2"))
+    max_workers: int = int(os.getenv("HSZ_ETL_MAX_WORKERS", "4"))
     poll_seconds: int = int(os.getenv("HSZ_ETL_POLL_SECONDS", "60"))
     safety_delay: timedelta = timedelta(
         seconds=int(os.getenv("HSZ_ETL_SAFETY_DELAY_SECONDS", "120"))

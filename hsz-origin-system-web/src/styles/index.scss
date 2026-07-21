@@ -1,10 +1,311 @@
-* { box-sizing: border-box; }
-body { margin: 0; background: #f5f7fa; color: #263238; font-family: 'Microsoft YaHei', sans-serif; }
-.layout { min-height: 100vh; }
-.sidebar { background: #fff; border-right: 1px solid #e4e7ed; }
-.sidebar h1 { padding: 16px; font-size: 16px; line-height: 1.6; font-weight: 600; }
-.header { display: flex; align-items: center; background: #fff; border-bottom: 1px solid #e4e7ed; }
-.metric-card { margin-bottom: 16px; color: #606266; }
-.metric-card strong { display: block; margin-top: 12px; color: #303133; font-size: 28px; }
-.login-page, .not-found { display: grid; min-height: 100vh; place-items: center; }
-.login-page .el-card { width: 420px; }
+:root {
+  font-family:
+    "IBM Plex Sans", "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+  color: #161616;
+  background: #f4f4f4;
+  font-synthesis: none;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  letter-spacing: 0.16px;
+}
+button,
+input {
+  font: inherit;
+}
+:root {
+  --el-color-primary: #1cb5a7;
+  --el-color-primary-light-3: #15998d;
+  --el-color-primary-light-5: #66cbc2;
+  --el-color-primary-light-7: #a4ded9;
+  --el-color-primary-light-8: #c7ebe8;
+  --el-color-primary-light-9: #e8f7f6;
+  --el-color-primary-dark-2: #107b72;
+}
+.el-button,
+.el-input__wrapper,
+.el-select__wrapper,
+.el-picker__popper,
+.el-table,
+.el-menu {
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+.el-button--primary {
+  --el-button-bg-color: #1cb5a7;
+  --el-button-border-color: #1cb5a7;
+  --el-button-hover-bg-color: #15998d;
+  --el-button-hover-border-color: #15998d;
+}
+.el-input__wrapper,
+.el-select__wrapper {
+  background: #f4f4f4 !important;
+}
+.el-table {
+  --el-table-header-bg-color: #f4f4f4;
+  --el-table-border-color: #e0e0e0;
+  --el-table-row-hover-bg-color: #f4f4f4;
+}
+.el-table th.el-table__cell {
+  color: #6f6f6f;
+  font-weight: 600;
+}
+.el-table .cell {
+  line-height: 20px;
+}
+.el-pagination.is-background .el-pager li.is-active {
+  background: #1cb5a7;
+}
+.el-pagination.is-background .el-pager li:not(.is-disabled):hover {
+  color: #15998d;
+}
+.el-pagination button:not(:disabled):hover {
+  color: #15998d;
+}
+.el-menu {
+  border-right: 0;
+}
+.el-menu-item {
+  border-left: 3px solid transparent;
+}
+.app-sidebar .el-menu-item:hover {
+  background: #314c5c !important;
+}
+.el-menu-item.is-active {
+  background: #314c5c !important;
+  border-left-color: #1cb5a7;
+}
+.login-page {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  min-height: 100vh;
+}
+.login-brand {
+  display: flex;
+  padding: 64px;
+  color: #fff;
+  background: #1cb5a7;
+  align-items: center;
+}
+.login-brand p {
+  margin: 0 0 16px;
+  font-size: 14px;
+}
+.login-brand h1 {
+  margin: 0 0 18px;
+  font-size: 42px;
+  font-weight: 300;
+}
+.login-brand span {
+  font-size: 16px;
+}
+.login-form-area {
+  display: grid;
+  place-items: center;
+  background: #fff;
+}
+.login-form {
+  width: min(380px, calc(100vw - 32px));
+}
+.login-form h2 {
+  margin: 0 0 8px;
+  font-size: 28px;
+  font-weight: 400;
+}
+.login-form > p {
+  margin: 0 0 32px;
+  color: #525252;
+  font-size: 14px;
+}
+.login-form .el-button {
+  width: 100%;
+  margin-top: 8px;
+}
+.app-layout {
+  min-height: 100vh;
+}
+.app-sidebar {
+  background: #26383e;
+  transition: width 0.2s;
+  overflow: hidden;
+}
+.brand {
+  display: flex;
+  height: 68px;
+  align-items: center;
+  padding: 0 16px;
+  color: #fff;
+  background: #1cb5a7;
+  font-size: 20px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.app-sidebar .el-menu {
+  width: 224px;
+}
+.app-sidebar .el-menu--collapse {
+  width: 56px;
+}
+.app-header {
+  display: flex;
+  height: 68px;
+  align-items: center;
+  padding: 0 16px;
+  background: #fff;
+  border-bottom: 1px solid #e0e0e0;
+}
+.app-header strong {
+  font-size: 18px;
+}
+.page-title {
+  margin-left: 16px;
+  padding-left: 16px;
+  border-left: 1px solid #e0e0e0;
+  color: #525252;
+  font-size: 15px;
+}
+.header-menu-toggle {
+  width: 40px;
+  height: 40px;
+  margin-right: 12px;
+  color: #6f767d;
+  font-size: 22px;
+}
+.header-menu-toggle:hover {
+  color: #1cb5a7;
+  background: #f4f4f4;
+}
+.account {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  margin-left: auto;
+  color: #525252;
+  font-size: 14px;
+}
+.app-main {
+  padding: 16px;
+  overflow: hidden;
+  background: #f4f4f4;
+}
+.report-page {
+  min-height: calc(100vh - 100px);
+  padding: 16px;
+  background: #fff;
+  border: 1px solid #e0e0e0;
+}
+.sync-log-page {
+  min-height: calc(100vh - 100px);
+  padding: 16px;
+  background: #fff;
+  border: 1px solid #e0e0e0;
+}
+.sync-log-filter {
+  display: flex;
+  gap: 16px;
+}
+.sync-summary {
+  display: flex;
+  gap: 24px;
+  margin: 16px 0;
+  color: #525252;
+  font-size: 14px;
+}
+.missing-window {
+  display: inline-block;
+  margin-right: 16px;
+}
+.report-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 16px;
+  margin-bottom: 8px;
+}
+.report-filter .el-form-item {
+  margin-right: 0;
+  margin-bottom: 12px;
+}
+.report-note {
+  margin: 0 0 16px;
+  color: #525252;
+  font-size: 14px;
+}
+.report-pagination {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+.report-date-picker .el-picker-panel__sidebar {
+  width: 96px;
+  padding: 8px 0;
+  border-right: 1px solid #e0e0e0;
+}
+.report-date-picker .el-picker-panel__shortcut {
+  height: 32px;
+  padding: 0 16px;
+  color: #525252;
+  line-height: 32px;
+}
+.report-date-picker .el-picker-panel__shortcut:hover {
+  color: #1cb5a7;
+  background: #f4f4f4;
+}
+@media (max-width: 1366px) {
+  .login-brand {
+    padding: 40px;
+  }
+  .login-brand h1 {
+    font-size: 36px;
+  }
+  .app-main {
+    padding: 12px;
+  }
+  .report-page {
+    padding: 12px;
+  }
+  .sync-log-page {
+    padding: 12px;
+  }
+  .report-filter {
+    gap: 0 12px;
+  }
+}
+@media (max-width: 672px) {
+  .login-page {
+    grid-template-columns: 1fr;
+  }
+  .login-brand {
+    min-height: 240px;
+    padding: 32px 16px;
+  }
+  .login-brand h1 {
+    font-size: 32px;
+  }
+  .app-header strong,
+  .account > span {
+    display: none;
+  }
+  .app-main {
+    padding: 8px;
+  }
+  .report-page {
+    padding: 8px;
+  }
+  .sync-log-page {
+    padding: 8px;
+  }
+  .sync-log-filter .el-date-editor {
+    width: 100% !important;
+  }
+  .report-filter .el-date-editor,
+  .report-filter .el-select {
+    width: 100% !important;
+  }
+  .report-pagination {
+    justify-content: flex-start;
+    overflow-x: auto;
+  }
+}

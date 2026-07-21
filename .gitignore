@@ -10,3 +10,4 @@ hsz-origin-system-web/dist/
 hsz-origin-system-web/*.local
 hsz-origin-system-web/logs/
 hsz-origin-system-web/*.log
+packages/
