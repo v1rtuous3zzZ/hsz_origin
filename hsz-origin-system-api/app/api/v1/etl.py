@@ -1,13 +1,13 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status as http_status
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.db.dependencies import get_db
-from app.etl.formal_sync import sync_window
-from app.etl.orchestrator import iter_windows, sync_range
+from app.etl.job_queue import enqueue_manual_sync, get_manual_job
+from app.etl.orchestrator import iter_windows
 
 router = APIRouter(prefix="/etl", tags=["etl"])
 
@@ -17,9 +17,10 @@ class ManualSyncRequest(BaseModel):
     end: datetime
     rebuild_facts: bool = False
     window_minutes: int = Field(default=120, ge=10, le=1440)
-    sleep_seconds: int = Field(default=1, ge=0, le=60)
+    sleep_seconds: int = Field(default=2, ge=0, le=60)
     resume: bool = True
     continue_on_error: bool = True
+    server_code: str | None = None
 
 
 def two_hour_windows(start: datetime, end: datetime):
@@ -38,6 +39,31 @@ def missing_windows(
             for batch_start, batch_end in successful_batches
         )
     ]
+
+
+def _validate_manual_range(start: datetime, end: datetime) -> None:
+    if start >= end:
+        raise HTTPException(status_code=422, detail="结束时间必须晚于开始时间")
+    if end > datetime.now(end.tzinfo):
+        raise HTTPException(status_code=422, detail="结束时间不能晚于当前时间")
+
+
+def _enqueue(db: Session, payload: ManualSyncRequest) -> dict:
+    _validate_manual_range(payload.start, payload.end)
+    job = enqueue_manual_sync(
+        db,
+        start=payload.start,
+        end=payload.end,
+        window_minutes=payload.window_minutes,
+        sleep_seconds=payload.sleep_seconds,
+        resume=payload.resume,
+        continue_on_error=payload.continue_on_error,
+        rebuild_facts=payload.rebuild_facts,
+        server_code=payload.server_code,
+    )
+    db.commit()
+    job["status_url"] = f"/api/v1/etl/manual-sync-jobs/{job['job_id']}"
+    return job
 
 
 @router.get("/batches")
@@ -119,7 +145,10 @@ def batches(
     }
 
 
-@router.post("/batches/{batch_id}/sources/{source_server_id}/retry")
+@router.post(
+    "/batches/{batch_id}/sources/{source_server_id}/retry",
+    status_code=http_status.HTTP_202_ACCEPTED,
+)
 def retry_source(batch_id: int, source_server_id: int, db: Session = Depends(get_db)) -> dict:
     source = (
         db.execute(
@@ -137,45 +166,26 @@ def retry_source(batch_id: int, source_server_id: int, db: Session = Depends(get
     )
     if not source or source["status"] != "FAILED":
         raise HTTPException(status_code=422, detail="仅可补同步失败的源服务器记录")
-    result = sync_window(source["window_start"], source["window_end"], source["server_code"])
-    if result["status"] == "SUCCESS":
-        db.execute(
-            text(
-                "UPDATE t_etl_batch_source SET status='SUCCESS',finished_at=NOW(3),"
-                "error_count=0,error_summary=NULL "
-                "WHERE batch_id=:batch AND source_server_id=:source"
-            ),
-            {"batch": batch_id, "source": source_server_id},
-        )
-        remaining = db.execute(
-            text(
-                "SELECT COUNT(*) FROM t_etl_batch_source WHERE batch_id=:batch AND status='FAILED'"
-            ),
-            {"batch": batch_id},
-        ).scalar_one()
-        if not remaining:
-            db.execute(
-                text(
-                    "UPDATE t_etl_batch SET status='SUCCESS',finished_at=NOW(3),"
-                    "error_summary=NULL WHERE batch_id=:batch"
-                ),
-                {"batch": batch_id},
-            )
-    return result
-
-
-@router.post("/manual-sync")
-def manual_sync(payload: ManualSyncRequest) -> dict:
-    if payload.start >= payload.end:
-        raise HTTPException(status_code=422, detail="结束时间必须晚于开始时间")
-    if payload.end > datetime.now(payload.end.tzinfo):
-        raise HTTPException(status_code=422, detail="结束时间不能晚于当前时间")
-    return sync_range(
-        payload.start,
-        payload.end,
-        window_minutes=payload.window_minutes,
-        sleep_seconds=payload.sleep_seconds,
-        resume=payload.resume,
-        continue_on_error=payload.continue_on_error,
-        rebuild_facts=payload.rebuild_facts,
+    return _enqueue(
+        db,
+        ManualSyncRequest(
+            start=source["window_start"],
+            end=source["window_end"],
+            server_code=source["server_code"],
+            rebuild_facts=True,
+        ),
     )
+
+
+@router.post("/manual-sync", status_code=http_status.HTTP_202_ACCEPTED)
+def manual_sync(payload: ManualSyncRequest, db: Session = Depends(get_db)) -> dict:
+    """只写入中心库任务队列，实际同步由独立 worker 执行。"""
+    return _enqueue(db, payload)
+
+
+@router.get("/manual-sync-jobs/{job_id}")
+def manual_sync_job(job_id: int, db: Session = Depends(get_db)) -> dict:
+    job = get_manual_job(db, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="手动同步任务不存在")
+    return job
