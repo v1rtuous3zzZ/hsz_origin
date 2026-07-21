@@ -14,7 +14,7 @@ import type {
 export interface SyncBatch {
   batch_id: number;
   batch_no: string;
-  status: "SUCCESS" | "FAILED" | "RUNNING";
+  status: "SUCCESS" | "PARTIAL" | "FAILED" | "RUNNING";
   window_start: string;
   window_end: string;
   started_at: string;
@@ -25,6 +25,16 @@ export interface SyncBatch {
   error_count: number;
   error_summary: string | null;
 }
+
+export interface ManualSyncJob {
+  job_id: number;
+  job_no: string;
+  status: "PENDING" | "RUNNING" | "SUCCESS" | "PARTIAL" | "FAILED";
+  window_start: string;
+  window_end: string;
+  status_url: string;
+}
+
 export interface SyncLogResult {
   total: number;
   items: SyncBatch[];
@@ -91,6 +101,10 @@ export const getSyncLogs = (start: string, end: string, status?: string) =>
     })
     .then(({ data }) => data);
 export const startManualSync = (start: string, end: string) =>
-  request.post("/etl/manual-sync", { start, end }).then(({ data }) => data);
+  request
+    .post<ManualSyncJob>("/etl/manual-sync", { start, end })
+    .then(({ data }) => data);
 export const retrySyncSource = (batchId: number, sourceId: number) =>
-  request.post(`/etl/batches/${batchId}/sources/${sourceId}/retry`).then(({ data }) => data);
+  request
+    .post<ManualSyncJob>(`/etl/batches/${batchId}/sources/${sourceId}/retry`)
+    .then(({ data }) => data);
