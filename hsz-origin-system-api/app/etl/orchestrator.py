@@ -1,8 +1,9 @@
-"""统一调度实时同步和历史循环补数。"""
+"""统一调度实时同步、历史循环补数和事实重建。"""
 
 import logging
 import time
 from collections import deque
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -18,7 +19,16 @@ from app.etl.source_config import load_mapping, load_sources
 
 logger = logging.getLogger("hsz.etl.orchestrator")
 settings = EtlSettings()
-SHANGHAI = ZoneInfo("Asia/Shanghai")
+ProgressCallback = Callable[[dict], None]
+
+
+def shanghai_timezone() -> ZoneInfo:
+    """延迟加载时区，避免模块导入阶段依赖系统 zoneinfo 数据。"""
+    return ZoneInfo("Asia/Shanghai")
+
+
+def shanghai_now() -> datetime:
+    return datetime.now(shanghai_timezone()).replace(tzinfo=None)
 
 
 def next_month_start(value: datetime) -> datetime:
@@ -49,9 +59,9 @@ def aligned_live_window(
     """计算最近一个已经完整结束并经过安全延迟的对齐窗口。"""
     window_minutes = window_minutes or settings.live_window_minutes
     safety_delay = safety_delay if safety_delay is not None else settings.safety_delay
-    current = now or datetime.now(SHANGHAI).replace(tzinfo=None)
+    current = now or shanghai_now()
     if current.tzinfo is not None:
-        current = current.astimezone(SHANGHAI).replace(tzinfo=None)
+        current = current.astimezone(shanghai_timezone()).replace(tzinfo=None)
     effective = current - safety_delay
     midnight = effective.replace(hour=0, minute=0, second=0, microsecond=0)
     elapsed_minutes = int((effective - midnight).total_seconds() // 60)
@@ -138,6 +148,7 @@ def _sync_resumable_window(
             source_batch_size=source_batch_size,
             max_workers=1,
         )
+
     if not resume:
         return sync_window(
             start,
@@ -162,6 +173,7 @@ def _sync_resumable_window(
             source_batch_size=source_batch_size,
             max_workers=max_workers,
         )
+
     missing = missing_server_codes(start, end)
     if not missing:
         return {
@@ -279,8 +291,10 @@ def sync_range(
     max_windows: int | None = None,
     source_batch_size: int | None = None,
     max_workers: int | None = None,
+    progress_callback: ProgressCallback | None = None,
+    result_limit: int = 100,
 ) -> dict:
-    """循环同步历史区间，默认跳过成功窗口并在窗口间短暂休眠。"""
+    """循环同步历史区间；结果只保留最近若干窗口，避免长任务占满内存。"""
     window_minutes = window_minutes or settings.history_window_minutes
     sleep_seconds = (
         settings.history_sleep_seconds if sleep_seconds is None else sleep_seconds
@@ -289,13 +303,14 @@ def sync_range(
     if max_windows is not None:
         windows = windows[:max_windows]
 
-    results = []
+    results = deque(maxlen=max(1, result_limit))
     attempted = failed = skipped = 0
+    processed_end = start
     for index, (window_start, window_end) in enumerate(windows):
-        # 过去月份直接读月表，避免每个历史窗口先对实时表做一次空查询。
-        now = datetime.now(SHANGHAI).replace(tzinfo=None)
         default_source_mode = (
-            "HISTORY" if window_start.strftime("%Y%m") < now.strftime("%Y%m") else "AUTO"
+            "HISTORY"
+            if window_start.strftime("%Y%m") < shanghai_now().strftime("%Y%m")
+            else "AUTO"
         )
         attempted += 1
         result = _sync_resumable_window(
@@ -316,25 +331,49 @@ def sync_range(
         result.setdefault("window_start", window_start)
         result.setdefault("window_end", window_end)
         results.append(result)
+        processed_end = window_end
         if result["status"] not in {"SUCCESS", "SKIPPED"}:
             failed += 1
-            if not continue_on_error:
-                break
+        progress = {
+            "window_count": len(windows),
+            "processed_count": index + 1,
+            "attempted_count": attempted,
+            "skipped_count": skipped,
+            "failed_count": failed,
+            "last_window_start": window_start,
+            "last_window_end": window_end,
+            "last_status": result["status"],
+        }
+        if progress_callback:
+            progress_callback(progress)
+        if failed and not continue_on_error:
+            break
         if index < len(windows) - 1 and sleep_seconds > 0:
             time.sleep(sleep_seconds)
 
     fact_result = None
-    processed_end = windows[-1][1] if windows else end
-    if rebuild_facts and failed == 0:
+    if rebuild_facts and failed == 0 and processed_end > start:
         fact_result = rebuild_fact_range(start, processed_end)
+        if progress_callback:
+            progress_callback(
+                {
+                    "window_count": len(windows),
+                    "processed_count": len(windows),
+                    "attempted_count": attempted,
+                    "skipped_count": skipped,
+                    "failed_count": failed,
+                    "fact_rebuild": fact_result,
+                }
+            )
 
     return {
         "status": "SUCCESS" if failed == 0 else "PARTIAL",
         "window_count": len(windows),
+        "processed_count": attempted + skipped + failed,
         "attempted_count": attempted,
         "skipped_count": skipped,
         "failed_count": failed,
-        "batches": results,
+        "recent_batches": list(results),
         "fact_rebuild": fact_result,
     }
 
