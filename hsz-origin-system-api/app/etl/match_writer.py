@@ -10,6 +10,7 @@ def write_matches(
     batch_id: int,
     category: str = "UNKNOWN",
 ):
+    """Bulk-write matches; uk_event_object_match is (event_key, object_no)."""
     if not matches:
         return
     table = f"t_event_object_match_{matches[0][0].event_time:%Y%m}"

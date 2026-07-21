@@ -44,6 +44,7 @@ def read_rows(
     end,
     batch_size: int,
 ):
+    """Read one bounded source slice through the (GantryId, TransTime, ...) index."""
     select = ", ".join(f"`{actual}` AS `{canonical}`" for canonical, actual in columns.items())
     placeholders = ", ".join(["%s"] * len(physical_codes))
     sql = f"SELECT {select} FROM `{table}` WHERE `{columns['trans_time']}` >= %s AND `{columns['trans_time']}` < %s AND `{columns['gantry_id']}` IN ({placeholders})"

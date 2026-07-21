@@ -4,7 +4,7 @@ from sqlalchemy import text
 
 
 def rebuild(db, start: datetime, end: datetime, batch_id: int) -> None:
-    """从月度命中表重建全部受影响事实；严禁按本批增量相加。"""
+    """重建受影响事实；小时/日走时间索引，月事实从中心库日事实汇总。"""
     if start.strftime("%Y%m") != (end - timedelta(microseconds=1)).strftime("%Y%m"):
         raise ValueError("事实重算仅接受单月窗口")
     matches = f"t_event_object_match_{start:%Y%m}"

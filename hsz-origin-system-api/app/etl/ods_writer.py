@@ -9,6 +9,7 @@ def ensure_month_tables(db: Session, month: str):
 
 
 def write_events(db: Session, events: list[Event], batch_id: int):
+    """Bulk-upsert center ODS rows; uk_ods_event_key provides idempotency."""
     if not events:
         return
     table = f"t_ods_event_{events[0].event_time:%Y%m}"
