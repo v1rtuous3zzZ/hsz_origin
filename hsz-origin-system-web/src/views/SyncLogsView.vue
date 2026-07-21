@@ -24,7 +24,9 @@ const formatTime = (value: string) => value.replace("T", " ").slice(0, 16);
 const statusType = (status: string) =>
   status === "SUCCESS" ? "success" : status === "FAILED" ? "danger" : "warning";
 const statusLabel = (status: string) =>
-  ({ SUCCESS: "成功", FAILED: "失败", RUNNING: "执行中" })[status] ?? status;
+  ({ SUCCESS: "成功", PARTIAL: "部分失败", FAILED: "失败", RUNNING: "执行中" })[
+    status
+  ] ?? status;
 const currentRange = () => ({
   start: toLocalIso(range.value[0]),
   end: toLocalIso(range.value[1]),
@@ -43,9 +45,8 @@ const load = async () => {
 const retrySource = async (batchId: number, sourceId: number) => {
   retrying.value = sourceId;
   try {
-    await retrySyncSource(batchId, sourceId);
-    ElMessage.success("该服务器补同步已完成");
-    await load();
+    const response = await retrySyncSource(batchId, sourceId);
+    ElMessage.success(`补同步任务 ${response.job_no} 已提交后台执行`);
   } finally {
     retrying.value = undefined;
   }
@@ -56,8 +57,8 @@ const sync = async () => {
     return ElMessage.warning("结束时间不能晚于当前时间");
   try {
     await ElMessageBox.confirm(
-      "是否开始手动同步所选时间区间的门架数据？",
-      "开始手动同步",
+      "是否提交所选时间区间的门架同步任务？",
+      "提交手动同步",
       { confirmButtonText: "是", cancelButtonText: "否", type: "warning" },
     );
   } catch {
@@ -66,7 +67,7 @@ const sync = async () => {
   syncing.value = true;
   try {
     const response = await startManualSync(start, end);
-    ElMessage.success(`已完成 ${response.window_count} 个同步窗口的手动同步`);
+    ElMessage.success(`手动同步任务 ${response.job_no} 已提交后台执行`);
   } finally {
     syncing.value = false;
   }
@@ -92,7 +93,7 @@ onMounted(load);
         ><el-button type="primary" native-type="submit" :loading="loading"
           >查询</el-button
         ><el-button type="primary" :loading="syncing" @click="sync"
-          >同步</el-button
+          >提交同步</el-button
         ></el-form-item
       >
     </el-form>
