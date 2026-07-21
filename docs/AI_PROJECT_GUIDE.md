@@ -18,9 +18,7 @@
 | 报表选项 | `GET /api/v1/reports/options`、`GET /api/v1/reports/directions?flow=entry|exit` |
 | 报表 | `GET /api/v1/reports/entry-flow`、`exit-flow`、`local-entry-station-flow`、`vehicle-types`、`media-vehicle-types`、`entry-stations`、`entry-provinces` |
 | 数据大屏 | `GET /api/v1/dashboard/latest-range`、`route-stack`、`direction-flow`、`local-station-flow`、`section-rank`、`vehicle-type-ratio`、`province-summary` |
-| ETL | `GET /api/v1/etl/batches?start=&end=`（按区间查看批次与同步覆盖缺口）、`POST /api/v1/etl/manual-sync` |
-
-报表共用参数：`start`、`end`、`granularity=hour|day|week|month|year`、`page`、`page_size`。方向报表使用可重复 `direction_ids`；本路段数据统计使用可重复 `station_ids`。车型名称由 `t_vehicle_type_dict` 返回；入口站名称缺失返回“未知”。介质车型统计按 ODS 的 `media_type` 分类：`1` 为 OBU、`2` 为 CPC，其他或空值归为“无介质”。入口省份统计的 `province_code` 同样取自 `t_toll_station`；站点或省份编码无法匹配时返回 `UNKNOWN`。
+| ETL | `GET /api/v1/etl/batches?start=&end=`、`POST /api/v1/etl/manual-sync` |
 
 ## 数据库职责
 
@@ -39,28 +37,32 @@
 
 ## 同步规则
 
-- 手动同步按连续两小时窗口，跨月切分。
-- 同一同步窗口最多并行读取 4 个门架源库。源连接只负责读取原始明细，读取完成后立即关闭；标准化、规则匹配、ODS/命中写入和事实重建均在中心库执行。同步不使用跨任务 MySQL 命名锁，ODS 与命中表依靠唯一事件键幂等；大范围历史补数默认不重建事实，避免与实时事实重建互相覆盖。
-- 单个两小时窗口读取或重建失败时，立即完整重试一次；第二次失败则保留失败批次记录并继续下一个窗口。定时同步同样遵循该规则，下一次调度仍可正常执行。
-- 历史补数按多个两小时窗口执行时应延后事实重建；全部窗口写入成功后，再按月份统一重建事实表。实时窗口的小时、日事实从当月命中明细重建，月事实从中心库日事实汇总，禁止每两小时重复扫描整月命中明细。
-- 每个窗口每源先读实时表 `dfs_gantry_transaction` 的 `collection_enabled=1` 门架数据，并按每一条物理门架分别检查两小时的 12 个十分钟片段。某门架实时数据不完整或为空时，仅为该门架查询对应历史月表 `dfs_gantry_transactionYYYYMM`，再按 `TradeId` 去重合并；不得因同一服务器的其他门架数据连续而跳过该门架的历史查询。该规则避免正常门架双查，也覆盖实时表部分回补、两表同时存在或实时表已清理的窗口。
-- 同源按 `TradeId` 去重；中心事件键为 `SHA-256(source_server_id|source_trade_id)`，物理表名不参与幂等。
-- 入口流量在 8 个外部来向外，额外提供“本路段收费站来源”（方向 ID `199`）。它由 `t_local_entry_station` 配置的 6 个收费站识别，并按 `event_key` 去重；每次事实重算都同步重建该来源的小时、日、月事实。
-- 批次写 `t_etl_batch`，逐源明细写 `t_etl_batch_source`，全成功后推进 `t_etl_checkpoint`。
+- 正式入口为 `app.etl.cli`，支持 `live-once`、常驻 `live`、循环 `backfill` 和仅中心库执行的 `rebuild-facts`。`scripts/run_live_sync.py` 保留给原 systemd timer，`scripts/run_sync.py` 为统一包装。
+- 实时窗口固定对齐两小时，并减去安全延迟；例如 10:15 同步 08:00–10:00。循环任务每次先查中心批次，已有成功窗口时不访问门架。
+- 历史补数默认两小时一个窗口，跨月自动切分，成功窗口自动跳过，窗口之间休眠。过去月份直接读取历史月表；当前月份先读实时表，仅为覆盖不完整的物理门架补读月表。
+- 同步分为“门架采集”和“中心处理”两个阶段。源连接只负责有界范围明细读取，读取完成立即关闭；标准化、按 `TradeId` 去重、ODS/命中分批写入和事实重建均在中心库执行。
+- 源读取失败只重试对应源；中心库处理失败复用已经采集的内存快照，不得重新查询门架。
+- 实时同步与历史补数通过中心库 `GET_LOCK('hsz:etl:source-read')` 只串行化门架采集阶段，防止两个进程同时压源库；中心处理阶段立即释放该锁。不同 IP 可按 `HSZ_ETL_MAX_WORKERS` 并行，同一 IP 必须串行。
+- 断点续跑按源服务器判断。一个窗口部分成功后，后续循环只读取尚未成功的源服务器，不重复读取已成功源。
+- 源查询必须保留 `GantryId IN (...)` 与原始 `TransTime >= ... AND TransTime < ...`，利用现有 `(GantryId, TransTime, ...)` 范围索引；禁止包装索引列或无界扫描。
+- ODS 事件键为 `SHA-256(source_server_id|source_trade_id)`；实时表优先，历史表仅补不存在的 `TradeId`。中心 ODS 和命中表依靠唯一键保证重复窗口幂等。
+- 历史补数不在每个窗口重建事实；全部窗口成功后按月统一重建。事实重建失败只重试中心库阶段。
+- 批次写 `t_etl_batch`，逐源写 `t_etl_batch_source`。`source_row_count` 表示实时表与月表按 `TradeId` 去重后的源事件数。
 
 ## CentOS 8
 
-Web 与 ETL 分离。生产 systemd timer 每两小时第 15 分钟启动独立 ETL 脚本；按 `Asia/Shanghai` 计算刚完整结束的两小时窗口（例如 10:15 同步 08:00–10:00），跨月拆分。另有每天 04:30（`Asia/Shanghai`）的核对任务，比较最近 7 个完整自然日的源端两小时计数与中心入库计数，只补不一致的源服务器窗口；单晚最多 24 个，避免占满门架源库。timer 是操作系统调度，不是项目内定时器；调度脚本不能调用 HTTP 手动同步接口。
+推荐二选一：
+
+1. systemd timer 每两小时第 15 分钟执行 `python scripts/run_live_sync.py`；
+2. systemd service 常驻执行 `python -m app.etl.cli live`。
+
+历史补数使用独立命令 `python -m app.etl.cli backfill --start ... --end ...`。即使与实时任务同时启动，门架采集锁也会避免并发读取源库；实时任务可在历史窗口之间取得锁。
+
+另有每天 04:30 的核对任务，比较最近 7 个完整自然日源端与中心 ODS 唯一事件数，只补不一致的源服务器窗口；单晚最多 24 个。
 
 ## 前端设计
 
-前端的唯一视觉规范是 `hsz-origin-system-web/DESIGN.md`。该规范以 IBM Carbon 为基础，已经针对本项目的内网报表后台场景定制；所有 UI 改动必须先阅读并遵循。不得照搬 IBM 官网营销页结构，也不得另建冲突的颜色、字体、圆角、阴影或间距体系。
-
-核心原则：IBM Blue、方角、无阴影、细边框、紧凑表格、固定企业后台布局、内网离线资源和桌面端适配。
-
-前端固定路由为 `/login`、`/dashboard`、`/reports/entry-flow`、`/reports/exit-flow`、`/reports/local-entry-station-flow`、`/reports/vehicle-types`、`/reports/media-vehicle-types`、`/reports/entry-stations`、`/reports/entry-provinces` 和 `/sync-logs`。登录后默认进入 `/reports/entry-flow`，数据大屏仅通过独立菜单进入；大屏通过 `latest-range` 使用事实表最新有数据的自然日。数据大屏复用旧系统深色大屏素材与 ECharts 样式；预测模块暂不接入，断面流量排名不改同步脚本和数据库结构，按 `t_ods_event_YYYYMM.current_physical_gantry_code` 聚合已同步成功事件并关联 `t_physical_gantry.collection_enabled=1` 的本项目采集门架。本路段数据统计按收费站展示行、按时间展示列，并包含合计。同步日志页按选中区间显示批次执行状态；手动同步会等待所选窗口全部执行结束，页面不展示实时进度也不自动刷新，维护者可稍后手动查询日志。“缺失”只表示两小时窗口未被成功批次完整覆盖，不等同于源库没有交易数据。认证 Token 仅存于浏览器 `sessionStorage`；报表选项在会话中缓存。Excel 导出接口和密码修改接口尚未提供，前端不得虚构对应能力。
-
-生产前端构建由 `hsz-origin-system-web/.env.production` 固定 `VITE_API_BASE_URL=/api/v1`，必须通过 Nginx `/api/` 反向代理访问 API；不得把本机开发地址编译进生产包。
+前端唯一视觉规范是 `hsz-origin-system-web/DESIGN.md`。规范以 IBM Carbon 为基础，适用于内网报表后台；不得另建冲突的颜色、字体、圆角、阴影或间距体系。
 
 ## 验证
 
