@@ -41,6 +41,11 @@ class EtlSettings:
         os.getenv("HSZ_ETL_MANUAL_JOB_STALE_MINUTES", "360")
     )
 
+    overlap: timedelta = timedelta(seconds=int(os.getenv("HSZ_ETL_OVERLAP_SECONDS", "600")))
+    initial_lookback: timedelta = timedelta(
+        minutes=int(os.getenv("HSZ_ETL_INITIAL_LOOKBACK_MINUTES", "60"))
+    )
+
 
 def source_credentials(credential_key: str) -> tuple[str, str]:
     prefix = credential_key.upper()
