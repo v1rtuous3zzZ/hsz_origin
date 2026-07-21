@@ -4,9 +4,16 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
+from sqlalchemy import text
+
 from app.db.session import SessionLocal
 from app.etl.formal_sync import sync_window
-from app.etl.runner import windows
+from app.etl.orchestrator import (
+    rebuild_fact_range,
+    run_live_loop,
+    run_live_once,
+    sync_range,
+)
 from app.etl.source_config import load_mapping, load_sources
 
 
@@ -14,14 +21,7 @@ def parse_time(value: str) -> datetime:
     return datetime.fromisoformat(value)
 
 
-def add_window_arguments(parser):
-    parser.add_argument("--source-mode", choices=["legacy-test", "remote"], required=True)
-    parser.add_argument("--server")
-    parser.add_argument("--start", type=parse_time)
-    parser.add_argument("--end", type=parse_time)
-
-
-def main():
+def configure_logging() -> None:
     Path("logs").mkdir(exist_ok=True)
     logging.basicConfig(
         level=logging.INFO,
@@ -31,89 +31,139 @@ def main():
             logging.StreamHandler(),
         ],
     )
-    parser = argparse.ArgumentParser(description="沪苏浙 G50 ETL 独立进程")
+
+
+def add_common_source_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--server", help="只同步指定 server_code")
+    parser.add_argument("--batch-size", type=int, help="门架流式读取批次")
+    parser.add_argument("--max-workers", type=int, help="不同门架服务器最大并发数")
+    parser.add_argument("--source-mode", choices=["remote"], default="remote")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="沪苏浙 G50 统一 ETL 同步进程")
     sub = parser.add_subparsers(dest="command", required=True)
-    inspect = sub.add_parser("inspect")
-    inspect.add_argument("--source-mode", choices=["legacy-test", "remote"], required=True)
-    inspect.add_argument("--server")
-    inspect.add_argument("--month")
-    once = sub.add_parser("live-once")
-    add_window_arguments(once)
-    backfill = sub.add_parser("backfill")
-    add_window_arguments(backfill)
-    backfill.add_argument("--window-minutes", type=int, default=60)
-    backfill.add_argument("--job-name", required=True)
-    backfill.add_argument("--batch-size", type=int)
-    backfill.add_argument("--max-workers", type=int)
-    backfill.add_argument("--sleep-seconds", type=int)
-    backfill.add_argument("--reset-checkpoint", action="store_true")
-    backfill.add_argument("--skip-fact-rebuild", action="store_true")
-    live = sub.add_parser("live")
-    add_window_arguments(live)
-    live.add_argument("--poll-seconds", type=int, default=60)
-    live.add_argument("--allow-legacy-live", action="store_true")
-    status = sub.add_parser("status")
+
+    inspect = sub.add_parser("inspect", help="查看启用的源服务器和门架映射")
+    add_common_source_options(inspect)
+
+    status = sub.add_parser("status", help="查看最近同步批次")
     status.add_argument("--job-code")
     status.add_argument("--limit", type=int, default=20)
-    args = parser.parse_args()
-    with SessionLocal() as db:
-        if args.command == "inspect":
-            sources, mapping = load_sources(db, args.server), load_mapping(db)
-            print(
-                json.dumps(
-                    {
-                        "enabled_sources": len(sources),
-                        "physical_gantries": sum(map(len, mapping.values())),
-                        "servers": [
-                            {
-                                "server_code": s.server_code,
-                                "physical_gantries": list(mapping.get(s.source_server_id, {})),
-                            }
-                            for s in sources
-                        ],
-                    },
-                    ensure_ascii=False,
-                    default=str,
-                )
-            )
-            return
-        if args.command == "status":
-            from sqlalchemy import text
 
-            print(
-                json.dumps(
-                    [
-                        dict(r)
-                        for r in db.execute(
-                            text(
-                                "SELECT batch_no,job_code,status,window_start,window_end,error_summary FROM t_etl_batch WHERE (:job IS NULL OR job_code=:job) ORDER BY batch_id DESC LIMIT :limit"
-                            ),
-                            {"job": args.job_code, "limit": args.limit},
-                        ).mappings()
-                    ],
-                    ensure_ascii=False,
-                    default=str,
-                )
-            )
-            return
-        if not args.start or not args.end:
-            parser.error("--start 与 --end 在本阶段验证中必填")
-        if (
-            args.command == "live"
-            and args.source_mode == "legacy-test"
-            and not args.allow_legacy_live
-        ):
-            parser.error("legacy-test live 需要 --allow-legacy-live")
-        if args.source_mode != "remote":
-            parser.error("正式同步仅支持 remote 源服务器")
-        if args.command == "backfill":
+    once = sub.add_parser("live-once", help="同步最近一个完整两小时窗口")
+    add_common_source_options(once)
+    once.add_argument("--start", type=parse_time, help="可选：显式窗口开始")
+    once.add_argument("--end", type=parse_time, help="可选：显式窗口结束")
+    once.add_argument("--force", action="store_true", help="即使已有成功记录也重新同步")
+
+    live = sub.add_parser("live", aliases=["live-loop"], help="常驻循环执行两小时同步")
+    add_common_source_options(live)
+    live.add_argument("--poll-seconds", type=int)
+    live.add_argument("--max-cycles", type=int, help="测试用；省略则持续运行")
+
+    backfill = sub.add_parser("backfill", help="按窗口循环补历史数据")
+    add_common_source_options(backfill)
+    backfill.add_argument("--start", type=parse_time, required=True)
+    backfill.add_argument("--end", type=parse_time, required=True)
+    backfill.add_argument("--window-minutes", type=int, default=120)
+    backfill.add_argument("--sleep-seconds", type=int)
+    backfill.add_argument("--job-name", help="兼容旧命令；批次统一记为 HISTORY_SYNC")
+    backfill.add_argument("--no-resume", action="store_true", help="不跳过已成功窗口")
+    backfill.add_argument("--stop-on-error", action="store_true")
+    backfill.add_argument("--skip-fact-rebuild", action="store_true")
+    backfill.add_argument("--max-windows", type=int)
+    backfill.add_argument("--reset-checkpoint", action="store_true", help="兼容旧参数")
+
+    facts = sub.add_parser("rebuild-facts", help="只在中心库重建指定区间事实")
+    facts.add_argument("--start", type=parse_time, required=True)
+    facts.add_argument("--end", type=parse_time, required=True)
+
+    return parser
+
+
+def main() -> None:
+    configure_logging()
+    parser = build_parser()
+    args = parser.parse_args()
+
+    if args.command == "inspect":
+        with SessionLocal() as db:
+            sources, mapping = load_sources(db, args.server), load_mapping(db)
+        result = {
+            "enabled_sources": len(sources),
+            "physical_gantries": sum(map(len, mapping.values())),
+            "servers": [
+                {
+                    "server_code": source.server_code,
+                    "physical_gantries": list(mapping.get(source.source_server_id, {})),
+                }
+                for source in sources
+            ],
+        }
+    elif args.command == "status":
+        with SessionLocal() as db:
             result = [
-                sync_window(start, end, args.server, rebuild_facts=not args.skip_fact_rebuild)
-                for start, end in windows(args.start, args.end, args.window_minutes)
+                dict(row)
+                for row in db.execute(
+                    text(
+                        "SELECT batch_no,job_code,status,window_start,window_end,"
+                        "source_row_count,success_event_count,matched_event_count,error_summary "
+                        "FROM t_etl_batch WHERE (:job IS NULL OR job_code=:job) "
+                        "ORDER BY batch_id DESC LIMIT :limit"
+                    ),
+                    {"job": args.job_code, "limit": args.limit},
+                ).mappings()
             ]
+    elif args.command == "live-once":
+        if (args.start is None) != (args.end is None):
+            parser.error("--start 与 --end 必须同时提供")
+        if args.start is not None:
+            result = sync_window(
+                args.start,
+                args.end,
+                args.server,
+                rebuild_facts=True,
+                job_code="LIVE_SYNC",
+                job_type="INCREMENTAL",
+                source_batch_size=args.batch_size,
+                max_workers=args.max_workers,
+            )
         else:
-            result = sync_window(args.start, args.end, args.server)
-        print(json.dumps(result, ensure_ascii=False, default=str))
+            result = run_live_once(
+                server_code=args.server,
+                resume=not args.force,
+                source_batch_size=args.batch_size,
+                max_workers=args.max_workers,
+            )
+    elif args.command in {"live", "live-loop"}:
+        result = run_live_loop(
+            poll_seconds=args.poll_seconds,
+            server_code=args.server,
+            max_cycles=args.max_cycles,
+            source_batch_size=args.batch_size,
+            max_workers=args.max_workers,
+        )
+    elif args.command == "backfill":
+        result = sync_range(
+            args.start,
+            args.end,
+            server_code=args.server,
+            window_minutes=args.window_minutes,
+            sleep_seconds=args.sleep_seconds,
+            resume=not args.no_resume,
+            continue_on_error=not args.stop_on_error,
+            rebuild_facts=not args.skip_fact_rebuild,
+            max_windows=args.max_windows,
+            source_batch_size=args.batch_size,
+            max_workers=args.max_workers,
+        )
+    elif args.command == "rebuild-facts":
+        result = rebuild_fact_range(args.start, args.end)
+    else:
+        parser.error("未知命令")
+
+    print(json.dumps(result, ensure_ascii=False, default=str))
 
 
 if __name__ == "__main__":
