@@ -2,6 +2,7 @@
 
 import logging
 import time
+from collections import deque
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -117,11 +118,30 @@ def _sync_resumable_window(
     source_batch_size: int | None,
     max_workers: int | None,
 ) -> dict:
-    if server_code or not resume:
+    if server_code:
+        if resume and window_was_successful(start, end, server_code):
+            return {
+                "status": "SKIPPED",
+                "reason": "指定源服务器在该窗口已有成功记录",
+                "window_start": start,
+                "window_end": end,
+                "server_code": server_code,
+            }
         return sync_window(
             start,
             end,
             server_code,
+            rebuild_facts=rebuild_facts,
+            job_code=job_code,
+            job_type=job_type,
+            default_source_mode=default_source_mode,
+            source_batch_size=source_batch_size,
+            max_workers=1,
+        )
+    if not resume:
+        return sync_window(
+            start,
+            end,
             rebuild_facts=rebuild_facts,
             job_code=job_code,
             job_type=job_type,
@@ -224,7 +244,7 @@ def run_live_loop(
 ) -> list[dict]:
     """常驻循环；每次只同步最近一个完整两小时窗口。"""
     poll_seconds = poll_seconds or settings.poll_seconds
-    results = []
+    results = deque(maxlen=max_cycles or 100)
     cycles = 0
     while max_cycles is None or cycles < max_cycles:
         cycles += 1
@@ -243,7 +263,7 @@ def run_live_loop(
             results.append({"status": "FAILED", "error": str(error)[:2000]})
         if max_cycles is None or cycles < max_cycles:
             time.sleep(poll_seconds)
-    return results
+    return list(results)
 
 
 def sync_range(
@@ -320,38 +340,50 @@ def sync_range(
 
 
 def rebuild_fact_range(start: datetime, end: datetime, retries: int | None = None) -> dict:
-    """历史明细全部写完后按月统一重建事实，全程只访问中心库。"""
+    """历史明细全部写完后按月独立事务重建事实，全程只访问中心库。"""
     retries = retries or settings.center_retries
     with SessionLocal.begin() as db:
         batch_id, batch_no = start_batch(db, "FACT_REBUILD", "REBUILD", start, end)
 
-    last_error = None
-    for attempt in range(1, retries + 1):
-        try:
-            with SessionLocal.begin() as db:
-                for month_start, month_end in _month_ranges(start, end):
+    rebuilt_months = []
+    for month_start, month_end in _month_ranges(start, end):
+        last_error = None
+        for attempt in range(1, retries + 1):
+            try:
+                with SessionLocal.begin() as db:
                     ensure_month_tables(db, month_start.strftime("%Y%m"))
                     rebuild(db, month_start, month_end, batch_id)
-                finish_batch(db, batch_id, "SUCCESS", {})
+                rebuilt_months.append(month_start.strftime("%Y%m"))
+                break
+            except Exception as error:
+                last_error = error
+                logger.exception(
+                    "fact rebuild month=%s attempt=%s failed",
+                    month_start.strftime("%Y%m"),
+                    attempt,
+                )
+        else:
+            message = (
+                f"月份 {month_start:%Y%m} 事实重建重试 {retries} 次失败：{last_error}"
+            )[:2000]
+            with SessionLocal.begin() as db:
+                finish_batch(db, batch_id, "FAILED", {"error_count": 1}, message)
             return {
                 "batch_id": batch_id,
                 "batch_no": batch_no,
-                "status": "SUCCESS",
-                "attempt_count": attempt,
+                "status": "FAILED",
+                "failed_month": month_start.strftime("%Y%m"),
+                "rebuilt_months": rebuilt_months,
+                "error": message,
             }
-        except Exception as error:
-            last_error = error
-            logger.exception("fact rebuild attempt=%s failed", attempt)
 
-    message = f"事实重建重试 {retries} 次失败：{last_error}"[:2000]
     with SessionLocal.begin() as db:
-        finish_batch(db, batch_id, "FAILED", {"error_count": 1}, message)
+        finish_batch(db, batch_id, "SUCCESS", {})
     return {
         "batch_id": batch_id,
         "batch_no": batch_no,
-        "status": "FAILED",
-        "attempt_count": retries,
-        "error": message,
+        "status": "SUCCESS",
+        "rebuilt_months": rebuilt_months,
     }
 
 
