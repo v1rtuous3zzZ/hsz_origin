@@ -13,6 +13,7 @@ from app.etl.config import EtlSettings
 from app.etl.fact_builder import rebuild
 from app.etl.formal_sync import sync_window
 from app.etl.ods_writer import ensure_month_tables
+from app.etl.source_config import load_mapping, load_sources
 
 logger = logging.getLogger("hsz.etl.orchestrator")
 settings = EtlSettings()
@@ -59,35 +60,135 @@ def aligned_live_window(
     return start, end
 
 
+def expected_server_codes(server_code: str | None = None) -> set[str]:
+    with SessionLocal() as db:
+        mapping = load_mapping(db)
+        return {
+            source.server_code
+            for source in load_sources(db, server_code)
+            if mapping.get(source.source_server_id)
+        }
+
+
+def successful_server_codes(start: datetime, end: datetime) -> set[str]:
+    with SessionLocal() as db:
+        rows = db.execute(
+            text(
+                "SELECT DISTINCT server.server_code FROM t_etl_batch_source source "
+                "JOIN t_etl_batch batch ON batch.batch_id=source.batch_id "
+                "JOIN t_source_server server "
+                "ON server.source_server_id=source.source_server_id "
+                "WHERE batch.window_start=:start AND batch.window_end=:end "
+                "AND source.status='SUCCESS'"
+            ),
+            {"start": start, "end": end},
+        ).scalars()
+        return set(rows)
+
+
+def missing_server_codes(
+    start: datetime, end: datetime, server_code: str | None = None
+) -> list[str]:
+    expected = expected_server_codes(server_code)
+    successful = successful_server_codes(start, end)
+    return sorted(expected - successful)
+
+
 def window_was_successful(
     start: datetime,
     end: datetime,
     server_code: str | None = None,
 ) -> bool:
-    """检查窗口是否已成功，避免循环或手动重跑重复访问门架。"""
-    with SessionLocal() as db:
-        if server_code:
-            found = db.execute(
-                text(
-                    "SELECT 1 FROM t_etl_batch b "
-                    "JOIN t_etl_batch_source bs ON bs.batch_id=b.batch_id "
-                    "JOIN t_source_server s ON s.source_server_id=bs.source_server_id "
-                    "WHERE b.window_start=:start AND b.window_end=:end "
-                    "AND bs.status='SUCCESS' AND s.server_code=:server LIMIT 1"
-                ),
-                {"start": start, "end": end, "server": server_code},
-            ).scalar_one_or_none()
-        else:
-            found = db.execute(
-                text(
-                    "SELECT 1 FROM t_etl_batch "
-                    "WHERE window_start=:start AND window_end=:end "
-                    "AND status='SUCCESS' "
-                    "AND job_code IN ('LIVE_SYNC','HISTORY_SYNC','MANUAL_SYNC') LIMIT 1"
-                ),
-                {"start": start, "end": end},
-            ).scalar_one_or_none()
-    return found is not None
+    """允许多个补偿批次共同覆盖窗口，避免反复读取已成功源服务器。"""
+    expected = expected_server_codes(server_code)
+    return bool(expected) and not (expected - successful_server_codes(start, end))
+
+
+def _sync_resumable_window(
+    start: datetime,
+    end: datetime,
+    *,
+    server_code: str | None,
+    resume: bool,
+    rebuild_facts: bool,
+    job_code: str,
+    job_type: str,
+    default_source_mode: str,
+    source_batch_size: int | None,
+    max_workers: int | None,
+) -> dict:
+    if server_code or not resume:
+        return sync_window(
+            start,
+            end,
+            server_code,
+            rebuild_facts=rebuild_facts,
+            job_code=job_code,
+            job_type=job_type,
+            default_source_mode=default_source_mode,
+            source_batch_size=source_batch_size,
+            max_workers=max_workers,
+        )
+
+    expected = expected_server_codes()
+    if not expected:
+        return sync_window(
+            start,
+            end,
+            rebuild_facts=rebuild_facts,
+            job_code=job_code,
+            job_type=job_type,
+            default_source_mode=default_source_mode,
+            source_batch_size=source_batch_size,
+            max_workers=max_workers,
+        )
+    missing = missing_server_codes(start, end)
+    if not missing:
+        return {
+            "status": "SKIPPED",
+            "reason": "窗口的所有源服务器均已有成功记录",
+            "window_start": start,
+            "window_end": end,
+        }
+    if set(missing) == expected:
+        return sync_window(
+            start,
+            end,
+            rebuild_facts=rebuild_facts,
+            job_code=job_code,
+            job_type=job_type,
+            default_source_mode=default_source_mode,
+            source_batch_size=source_batch_size,
+            max_workers=max_workers,
+        )
+
+    results = []
+    for missing_server in missing:
+        results.append(
+            sync_window(
+                start,
+                end,
+                missing_server,
+                rebuild_facts=False,
+                job_code=job_code,
+                job_type=job_type,
+                default_source_mode=default_source_mode,
+                source_batch_size=source_batch_size,
+                max_workers=1,
+            )
+        )
+    failed = [result for result in results if result["status"] != "SUCCESS"]
+    fact_result = None
+    if not failed and rebuild_facts:
+        fact_result = rebuild_fact_range(start, end)
+    return {
+        "status": "SUCCESS" if not failed else "PARTIAL",
+        "window_start": start,
+        "window_end": end,
+        "repaired_servers": missing,
+        "batches": results,
+        "fact_rebuild": fact_result,
+    }
 
 
 def run_live_once(
@@ -99,17 +200,11 @@ def run_live_once(
     max_workers: int | None = None,
 ) -> dict:
     start, end = aligned_live_window(now)
-    if resume and window_was_successful(start, end, server_code):
-        return {
-            "status": "SKIPPED",
-            "reason": "窗口已有成功同步记录",
-            "window_start": start,
-            "window_end": end,
-        }
-    return sync_window(
+    return _sync_resumable_window(
         start,
         end,
-        server_code,
+        server_code=server_code,
+        resume=resume,
         rebuild_facts=True,
         job_code="LIVE_SYNC",
         job_type="INCREMENTAL",
@@ -177,28 +272,17 @@ def sync_range(
     results = []
     attempted = failed = skipped = 0
     for index, (window_start, window_end) in enumerate(windows):
-        if resume and window_was_successful(window_start, window_end, server_code):
-            skipped += 1
-            results.append(
-                {
-                    "status": "SKIPPED",
-                    "reason": "窗口已有成功同步记录",
-                    "window_start": window_start,
-                    "window_end": window_end,
-                }
-            )
-            continue
-
         # 过去月份直接读月表，避免每个历史窗口先对实时表做一次空查询。
         now = datetime.now(SHANGHAI).replace(tzinfo=None)
         default_source_mode = (
             "HISTORY" if window_start.strftime("%Y%m") < now.strftime("%Y%m") else "AUTO"
         )
         attempted += 1
-        result = sync_window(
+        result = _sync_resumable_window(
             window_start,
             window_end,
-            server_code,
+            server_code=server_code,
+            resume=resume,
             rebuild_facts=False,
             job_code="HISTORY_SYNC",
             job_type="BACKFILL",
@@ -206,6 +290,9 @@ def sync_range(
             source_batch_size=source_batch_size,
             max_workers=max_workers,
         )
+        if result["status"] == "SKIPPED":
+            skipped += 1
+            attempted -= 1
         result.setdefault("window_start", window_start)
         result.setdefault("window_end", window_end)
         results.append(result)
@@ -217,8 +304,9 @@ def sync_range(
             time.sleep(sleep_seconds)
 
     fact_result = None
+    processed_end = windows[-1][1] if windows else end
     if rebuild_facts and failed == 0:
-        fact_result = rebuild_fact_range(start, end)
+        fact_result = rebuild_fact_range(start, processed_end)
 
     return {
         "status": "SUCCESS" if failed == 0 else "PARTIAL",
