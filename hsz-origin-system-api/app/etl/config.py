@@ -15,7 +15,7 @@ class EtlSettings:
     batch_size: int = int(os.getenv("HSZ_ETL_BATCH_SIZE", "2000"))
     max_workers: int = int(os.getenv("HSZ_ETL_MAX_WORKERS", "4"))
     live_max_workers: int = int(os.getenv("HSZ_ETL_LIVE_MAX_WORKERS", "4"))
-    source_retries: int = int(os.getenv("HSZ_ETL_SOURCE_RETRIES", "2"))
+    source_retries: int = int(os.getenv("HSZ_ETL_SOURCE_RETRIES", "3"))
     source_lock_timeout_seconds: int = int(
         os.getenv("HSZ_ETL_SOURCE_LOCK_TIMEOUT_SECONDS", "300")
     )

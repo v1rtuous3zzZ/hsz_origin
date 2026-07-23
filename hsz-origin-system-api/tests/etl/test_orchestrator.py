@@ -27,6 +27,21 @@ def test_history_timeout_splits_window_to_smaller_queries():
     assert sync.call_args_list[1].args == (start, start + timedelta(hours=1))
 
 
+def test_one_hour_history_timeout_splits_to_thirty_minute_minimum():
+    start = datetime(2026, 1, 1)
+    end = start + timedelta(hours=1)
+    outcomes = [
+        {"status": "FAILED", "error": "TimeoutError: slow"},
+        {"status": "SUCCESS"},
+        {"status": "SUCCESS"},
+    ]
+    with patch("app.etl.orchestrator._sync_resumable_window", side_effect=outcomes) as sync:
+        result = _sync_history_window_with_split(start, end, marker=True)
+
+    assert result["status"] == "SUCCESS"
+    assert sync.call_args_list[1].args == (start, start + timedelta(minutes=30))
+
+
 def test_processed_count_does_not_count_failed_window_twice():
     start = datetime(2026, 1, 1)
     with (

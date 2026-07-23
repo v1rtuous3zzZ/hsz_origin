@@ -218,7 +218,7 @@ def _sync_history_window_with_split(start: datetime, end: datetime, **kwargs) ->
     if (
         result.get("status") in {"FAILED", "PARTIAL"}
         and "Timeout" in str(result)
-        and duration > timedelta(minutes=60)
+        and duration >= timedelta(minutes=60)
     ):
         middle = start + duration / 2
         left = _sync_history_window_with_split(start, middle, **kwargs)

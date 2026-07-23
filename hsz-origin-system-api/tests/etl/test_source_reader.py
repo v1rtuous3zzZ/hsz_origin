@@ -11,7 +11,10 @@ def make_source(port: int = 3307, database: str = "gantry_a") -> SourceServer:
     return SourceServer(1, "source-a", "10.13.0.1", port, database, "current", None, "key")
 
 
-def test_source_connection_uses_server_port_and_database() -> None:
+@pytest.mark.parametrize(
+    ("port", "database"), [(3307, "gantry_a"), (3310, "gantry_b")]
+)
+def test_source_connection_uses_each_server_port_and_database(port, database) -> None:
     result = MagicMock()
     result.mappings.return_value.all.return_value = [
         {"port": 3306, "username": "reader", "password": "secret", "db_name": "common", "charset": "utf8mb4"}
@@ -23,10 +26,24 @@ def test_source_connection_uses_server_port_and_database() -> None:
         patch("app.etl.source_reader.engine.connect", return_value=nullcontext(center)),
         patch("app.etl.source_reader.pymysql.connect", return_value=remote) as connect,
     ):
+        source_connection(make_source(port, database))
+
+    assert connect.call_args.kwargs["port"] == port
+    assert connect.call_args.kwargs["database"] == database
+
+
+def test_source_connection_prefers_credential_key_environment() -> None:
+    remote = MagicMock()
+    with (
+        patch("app.etl.source_reader.source_credentials", return_value=("key-user", "key-pass")),
+        patch("app.etl.source_reader.engine.connect") as center,
+        patch("app.etl.source_reader.pymysql.connect", return_value=remote) as connect,
+    ):
         source_connection(make_source())
 
-    assert connect.call_args.kwargs["port"] == 3307
-    assert connect.call_args.kwargs["database"] == "gantry_a"
+    center.assert_not_called()
+    assert connect.call_args.kwargs["user"] == "key-user"
+    assert connect.call_args.kwargs["password"] == "key-pass"
 
 
 def test_query_index_accepts_gantry_time_prefix() -> None:

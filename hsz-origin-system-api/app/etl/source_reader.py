@@ -8,6 +8,7 @@ from pymysql.cursors import SSDictCursor
 from sqlalchemy import text
 
 from app.db.engine import engine
+from app.etl.config import source_credentials
 from app.etl.models import SourceServer
 from app.etl.source_schema import resolve_columns
 
@@ -31,28 +32,32 @@ def is_transient_source_error(error: Exception) -> bool:
 
 def source_connection(server: SourceServer):
     """创建门架只读连接；流式游标避免一次性缓存全部结果。"""
-    with engine.connect() as connection:
-        config = (
-            connection.execute(
-                text(
-                    "SELECT port, username, password, db_name, charset "
-                    "FROM t_source_db_config"
+    try:
+        username, password = source_credentials(server.credential_key)
+        charset = "utf8mb4"
+    except RuntimeError:
+        with engine.connect() as connection:
+            configs = (
+                connection.execute(
+                    text("SELECT username, password, charset FROM t_source_db_config")
                 )
+                .mappings()
+                .all()
             )
-            .mappings()
-            .all()
-        )
-    if len(config) != 1:
-        raise RuntimeError("t_source_db_config 必须且只能有一条启用的公共凭据配置")
-    config = config[0]
+        if len(configs) != 1:
+            raise RuntimeError(
+                f"{server.credential_key} 环境凭据缺失，且公共凭据配置不是唯一一条"
+            )
+        username, password = configs[0]["username"], configs[0]["password"]
+        charset = configs[0]["charset"]
 
     connection = pymysql.connect(
         host=server.host_address,
         port=server.host_port,
-        user=config["username"],
-        password=config["password"],
+        user=username,
+        password=password,
         database=server.database_name,
-        charset=config["charset"],
+        charset=charset,
         cursorclass=SSDictCursor,
         autocommit=True,
         connect_timeout=10,
