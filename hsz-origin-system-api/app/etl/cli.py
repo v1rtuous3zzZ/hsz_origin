@@ -7,6 +7,7 @@ from pathlib import Path
 from sqlalchemy import text
 
 from app.db.session import SessionLocal
+from app.etl.config import EtlSettings
 from app.etl.formal_sync import sync_window
 from app.etl.job_queue import get_manual_job, run_manual_worker
 from app.etl.orchestrator import (
@@ -16,6 +17,8 @@ from app.etl.orchestrator import (
     sync_range,
 )
 from app.etl.source_config import load_mapping, load_sources
+
+settings = EtlSettings()
 
 
 def parse_time(value: str) -> datetime:
@@ -69,7 +72,9 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_source_options(backfill)
     backfill.add_argument("--start", type=parse_time, required=True)
     backfill.add_argument("--end", type=parse_time, required=True)
-    backfill.add_argument("--window-minutes", type=int, default=120)
+    backfill.add_argument(
+        "--window-minutes", type=int, default=settings.history_window_minutes
+    )
     backfill.add_argument("--sleep-seconds", type=int)
     backfill.add_argument("--no-resume", action="store_true", help="不跳过已成功窗口")
     backfill.add_argument("--stop-on-error", action="store_true")

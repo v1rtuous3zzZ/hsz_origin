@@ -1,16 +1,27 @@
 import os
 import socket
-import uuid
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 
 def start_batch(db: Session, job_code: str, job_type: str, start, end) -> tuple[int, str]:
-    number = f"{job_code}-{uuid.uuid4().hex[:12]}"
+    number = (
+        f"{job_code}-{os.urandom(6).hex()}"
+        if job_type == "REBUILD"
+        else f"SYNC-{start:%Y%m%d%H%M}-{end:%Y%m%d%H%M}"
+    )
     result = db.execute(
         text(
-            "INSERT INTO t_etl_batch (batch_no, job_code, job_type, window_start, window_end, host_name, process_id) VALUES (:number,:job,:kind,:start,:end,:host,:pid)"
+            "INSERT INTO t_etl_batch "
+            "(batch_no,job_code,job_type,window_start,window_end,host_name,process_id) "
+            "VALUES (:number,:job,:kind,:start,:end,:host,:pid) "
+            "ON DUPLICATE KEY UPDATE batch_id=LAST_INSERT_ID(batch_id),"
+            "job_code=VALUES(job_code),job_type=VALUES(job_type),status='RUNNING',"
+            "started_at=NOW(3),finished_at=NULL,source_row_count=0,"
+            "success_event_count=0,matched_event_count=0,fact_affected_count=0,"
+            "error_count=0,error_summary=NULL,host_name=VALUES(host_name),"
+            "process_id=VALUES(process_id)"
         ),
         {
             "number": number,

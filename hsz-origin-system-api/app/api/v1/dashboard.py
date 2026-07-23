@@ -272,40 +272,44 @@ def vehicle_type_ratio(start: datetime, end: datetime, db: Session = Depends(get
 
 
 def _province_counts(db: Session, start: datetime, end: datetime) -> dict[str, int]:
-    month = start.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    last_month = (end - timedelta(microseconds=1)).replace(
-        day=1, hour=0, minute=0, second=0, microsecond=0
+    full_days = (
+        start.hour == 0
+        and start.minute == 0
+        and start.second == 0
+        and start.microsecond == 0
+        and end.hour == 0
+        and end.minute == 0
+        and end.second == 0
+        and end.microsecond == 0
     )
-    tables = []
-    while month <= last_month:
-        tables.append(f"t_event_object_match_{month:%Y%m}")
-        month = (month.replace(day=28) + timedelta(days=4)).replace(day=1)
-    existing = (
-        db.execute(
-            text(
-                "SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name IN ("
-                + ",".join(f":table_{index}" for index in range(len(tables)))
-                + ")"
-            ),
-            {f"table_{index}": name for index, name in enumerate(tables)},
-        )
-        .scalars()
-        .all()
-    )
-    if not existing:
+    table = "t_fact_source_station_daily" if full_days else "t_fact_source_station_hourly"
+    period_column = "stat_date" if full_days else "stat_hour"
+    if full_days:
+        params = {"start": start.date(), "end": end.date()}
+    else:
+        params = {"start": start, "end": end}
+    exists = db.execute(
+        text(
+            "SELECT COUNT(*) FROM information_schema.tables "
+            "WHERE table_schema=DATABASE() AND table_name=:table"
+        ),
+        {"table": table},
+    ).scalar_one()
+    if not exists:
         return {}
-    events = " UNION ALL ".join(
-        f"SELECT event_time,entry_station_code,event_key FROM `{table}`" for table in existing
-    )
     rows = (
         db.execute(
             text(
-                "SELECT COALESCE(s.province_code,'UNKNOWN') AS province_id, COUNT(DISTINCT m.event_key) AS total "
-                f"FROM ({events}) m LEFT JOIN t_toll_station s ON s.station_code=m.entry_station_code "
-                "WHERE m.event_time>=:start AND m.event_time<:end "
+                "SELECT COALESCE(s.province_code,'UNKNOWN') AS province_id, "
+                "SUM(f.event_count) AS total "
+                f"FROM {table} f "
+                "JOIN t_stat_object o ON o.object_no=f.object_no "
+                "JOIN t_toll_station s ON s.toll_station_id=f.toll_station_id "
+                f"WHERE f.{period_column}>=:start AND f.{period_column}<:end "
+                "AND o.enabled=1 AND o.flow_type='ENTRY' "
                 "GROUP BY COALESCE(s.province_code,'UNKNOWN')"
             ),
-            {"start": start, "end": end},
+            params,
         )
         .mappings()
         .all()

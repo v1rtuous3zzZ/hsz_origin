@@ -351,7 +351,12 @@ def _persist_collected(
                 text(
                     "INSERT INTO t_etl_batch_source "
                     "(batch_id,source_server_id,actual_start,actual_end) "
-                    "VALUES (:batch,:source,:start,:end)"
+                    "VALUES (:batch,:source,:start,:end) "
+                    "ON DUPLICATE KEY UPDATE status='RUNNING',started_at=NOW(3),"
+                    "finished_at=NULL,actual_start=VALUES(actual_start),"
+                    "actual_end=VALUES(actual_end),source_row_count=0,"
+                    "success_event_count=0,matched_event_count=0,duplicated_count=0,"
+                    "error_count=0,error_summary=NULL"
                 ),
                 {
                     "batch": batch_id,
@@ -403,16 +408,40 @@ def _persist_collected(
         for source_server_id in completed_sources:
             advance(db, checkpoint_job_code, source_server_id, end, batch_id)
 
-        if failed_sources and completed_sources:
+        summary = db.execute(
+            text(
+                "SELECT COUNT(*) source_count,"
+                "SUM(status='SUCCESS') success_count,SUM(status='FAILED') failed_count,"
+                "COALESCE(SUM(source_row_count),0) source_row_count,"
+                "COALESCE(SUM(success_event_count),0) success_event_count,"
+                "COALESCE(SUM(matched_event_count),0) matched_event_count,"
+                "COALESCE(SUM(error_count),0) error_count "
+                "FROM t_etl_batch_source WHERE batch_id=:batch"
+            ),
+            {"batch": batch_id},
+        ).mappings().one()
+        if summary["failed_count"] and summary["success_count"]:
             status = "PARTIAL"
-        elif failed_sources:
+        elif summary["failed_count"]:
             status = "FAILED"
-        else:
+        elif summary["source_count"] == summary["success_count"]:
             status = "SUCCESS"
-        error_summary = (
-            f"失败源服务器：{','.join(failed_sources)}" if failed_sources else None
+        else:
+            status = "RUNNING"
+        failed_sources = list(
+            db.execute(
+                text(
+                    "SELECT server.server_code FROM t_etl_batch_source source "
+                    "JOIN t_source_server server "
+                    "ON server.source_server_id=source.source_server_id "
+                    "WHERE source.batch_id=:batch AND source.status='FAILED' "
+                    "ORDER BY server.server_code"
+                ),
+                {"batch": batch_id},
+            ).scalars()
         )
-        finish_batch(db, batch_id, status, metrics, error_summary)
+        error_summary = f"失败源服务器：{','.join(failed_sources)}" if failed_sources else None
+        finish_batch(db, batch_id, status, dict(summary), error_summary)
 
     return {
         "batch_id": batch_id,

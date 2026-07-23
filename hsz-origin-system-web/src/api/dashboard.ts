@@ -12,7 +12,7 @@ export const todayRange = () => {
   return { start: formatDateTime(start), end: formatDateTime(end) };
 };
 
-type DashboardRange = { start: string; end: string };
+type DashboardRange = { start: string; end: string; latestHour?: string };
 let cachedRange: DashboardRange | undefined;
 
 export const getLatestDashboardRange = async (): Promise<DashboardRange> => {
@@ -22,35 +22,46 @@ export const getLatestDashboardRange = async (): Promise<DashboardRange> => {
     end: string | null;
     latest_hour: string | null;
   }>("/dashboard/latest-range");
-  cachedRange = data.start && data.end ? { start: data.start, end: data.end } : todayRange();
+  cachedRange =
+    data.start && data.end
+      ? { start: data.start, end: data.end, latestHour: data.latest_hour ?? undefined }
+      : todayRange();
   return cachedRange;
 };
 
-export const currentHourRange = () => {
-  const end = new Date();
+export const currentHourRange = (latestHour?: string) => {
+  const end = latestHour ? new Date(latestHour) : new Date();
+  end.setHours(end.getHours() + 1, 0, 0, 0);
   const start = new Date(end);
-  start.setHours(start.getHours() - 1, start.getMinutes(), 0, 0);
+  start.setHours(start.getHours() - 2, 0, 0, 0);
   return { start: formatDateTime(start), end: formatDateTime(end) };
 };
 
 export const provinceRanges = (type: "day" | "hour", dayRange?: DashboardRange) => {
-  const range = type === "day" && dayRange ? dayRange : type === "day" ? todayRange() : currentHourRange();
+  const range =
+    type === "day" && dayRange
+      ? dayRange
+      : type === "day"
+        ? todayRange()
+        : currentHourRange(dayRange?.latestHour);
   const currentStart = new Date(range.start);
   const currentEnd = new Date(range.end);
   const compareStart = new Date(currentStart);
   compareStart.setDate(compareStart.getDate() - 1);
   const compareEnd = new Date(currentEnd);
   compareEnd.setDate(compareEnd.getDate() - 1);
-  const weekStart = new Date();
+  const weekStart = new Date(dayRange?.start ?? currentStart);
   weekStart.setDate(weekStart.getDate() - 7);
   weekStart.setHours(0, 0, 0, 0);
+  const weekEnd = new Date(dayRange?.end ?? currentEnd);
+  weekEnd.setHours(0, 0, 0, 0);
   return {
     start: range.start,
     end: range.end,
     compare_start: formatDateTime(compareStart),
     compare_end: formatDateTime(compareEnd),
     week_start: formatDateTime(weekStart),
-    week_end: formatDateTime(new Date()),
+    week_end: formatDateTime(weekEnd),
   };
 };
 
@@ -69,11 +80,9 @@ export const getLocalStationFlow = () =>
 
 export const getSectionRank = () =>
   getLatestDashboardRange().then((range) => {
-    const end = new Date(range.end);
-    const start = new Date(end);
-    start.setHours(start.getHours() - 1);
+    const { start, end } = currentHourRange(range.latestHour);
     return request.get("/dashboard/section-rank", {
-      params: { start: formatDateTime(start), end: formatDateTime(end), limit: 20 },
+      params: { start, end, limit: 20 },
     });
   });
 

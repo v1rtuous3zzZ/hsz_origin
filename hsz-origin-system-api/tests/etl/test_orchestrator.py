@@ -2,10 +2,40 @@ from datetime import datetime, timedelta
 from unittest.mock import patch
 
 from app.etl.orchestrator import (
+    _covers_window,
     _sync_resumable_window,
     aligned_live_window,
     iter_windows,
 )
+
+
+def test_smaller_successful_intervals_cover_a_larger_history_window():
+    start = datetime(2026, 1, 1)
+    end = datetime(2026, 1, 1, 6)
+
+    assert _covers_window(
+        [
+            (start, start + timedelta(hours=2)),
+            (start + timedelta(hours=2), start + timedelta(hours=4)),
+            (start + timedelta(hours=4), end),
+        ],
+        start,
+        end,
+    )
+
+
+def test_history_coverage_rejects_a_gap_between_successful_intervals():
+    start = datetime(2026, 1, 1)
+    end = datetime(2026, 1, 1, 6)
+
+    assert not _covers_window(
+        [
+            (start, start + timedelta(hours=2)),
+            (start + timedelta(hours=4), end),
+        ],
+        start,
+        end,
+    )
 
 
 def test_live_window_is_aligned_and_respects_safety_delay():

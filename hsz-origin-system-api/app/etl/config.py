@@ -22,7 +22,7 @@ class EtlSettings:
 
     center_retries: int = int(os.getenv("HSZ_ETL_CENTER_RETRIES", "2"))
     center_write_batch_size: int = int(
-        os.getenv("HSZ_ETL_CENTER_WRITE_BATCH_SIZE", "5000")
+        os.getenv("HSZ_ETL_CENTER_WRITE_BATCH_SIZE", "10000")
     )
 
     live_window_minutes: int = int(os.getenv("HSZ_ETL_LIVE_WINDOW_MINUTES", "120"))
@@ -34,7 +34,7 @@ class EtlSettings:
     history_window_minutes: int = int(
         os.getenv("HSZ_ETL_HISTORY_WINDOW_MINUTES", "120")
     )
-    history_sleep_seconds: int = int(os.getenv("HSZ_ETL_HISTORY_SLEEP_SECONDS", "2"))
+    history_sleep_seconds: int = int(os.getenv("HSZ_ETL_HISTORY_SLEEP_SECONDS", "0"))
 
     manual_job_poll_seconds: int = int(os.getenv("HSZ_ETL_MANUAL_JOB_POLL_SECONDS", "5"))
     manual_job_stale_minutes: int = int(

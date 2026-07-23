@@ -121,7 +121,7 @@ const drawRouteStack = async () => {
   routeChart?.setOption(
     {
       color: ["#f2a03f", "#3fb7ff", "#39d6c6", "#58c0ff", "#7fe0d6", "#7fb8ff", "#8fe6e0"],
-      grid: { left: 36, right: 16, top: 24, bottom: 42 },
+      grid: { left: 34, right: 10, top: 22, bottom: 40, containLabel: true },
       legend: { show: false },
       tooltip,
       ...baseAxis(times),
@@ -129,7 +129,7 @@ const drawRouteStack = async () => {
         {
           type: "slider",
           height: 14,
-          bottom: 8,
+          bottom: 4,
           start: 0,
           end: 70,
           handleSize: 10,
@@ -188,7 +188,7 @@ const drawDirectionFlow = async () => {
   directionChart?.setOption(
     {
       color: ["#3fb7ff", "#39d6c6"],
-      grid: { left: 32, right: 16, top: 34, bottom: 28 },
+      grid: { left: 30, right: 10, top: 34, bottom: 20, containLabel: true },
       legend: { top: 2, right: 8, textStyle: { color: "#cfe8ff", fontSize: 10 }, itemWidth: 14, itemHeight: 8 },
       tooltip,
       ...baseAxis(times),
@@ -214,7 +214,7 @@ const drawStationFlow = async () => {
   stationChart?.setOption(
     {
       color: palette,
-      grid: { left: 32, right: 32, top: 32, bottom: 26 },
+      grid: { left: 30, right: 24, top: 30, bottom: 18, containLabel: true },
       legend: {
         type: "scroll",
         top: 2,
@@ -325,7 +325,7 @@ onBeforeUnmount(() => {
       type="button"
       @click="router.push('/reports/entry-flow')"
     >
-      返回管理后台
+      返回
     </button>
     <div class="dashboard-title">沪苏浙溯源平台</div>
     <div class="dashboard-time">{{ now }}</div>
@@ -388,7 +388,7 @@ onBeforeUnmount(() => {
           <div class="panel-item__content">
             <div class="province-tabs">
               <button :class="{ active: provinceRange === 'day' }" @click="provinceRange = 'day'; loadProvince()">当日</button>
-              <button :class="{ active: provinceRange === 'hour' }" @click="provinceRange = 'hour'; loadProvince()">近1小时</button>
+              <button :class="{ active: provinceRange === 'hour' }" @click="provinceRange = 'hour'; loadProvince()">近2小时</button>
             </div>
             <div class="province-table">
               <div class="province-row province-head"><span>省名称</span><span>数量</span><span>昨日</span><span>一周内</span></div>
@@ -455,7 +455,7 @@ onBeforeUnmount(() => {
   top: 16px;
   left: 16px;
   height: 32px;
-  padding: 0 14px;
+  padding: 0 16px;
   border: 1px solid rgba(63, 183, 255, 0.5);
   border-radius: 6px;
   background: linear-gradient(135deg, rgba(20, 72, 118, 0.8), rgba(8, 24, 42, 0.4));
@@ -465,18 +465,18 @@ onBeforeUnmount(() => {
   box-shadow: inset 0 0 10px rgba(63, 183, 255, 0.25);
 }
 .dashboard-panels {
-  top: 88px;
-  left: 10px;
-  right: 10px;
-  bottom: 24px;
+  top: 80px;
+  left: 0;
+  right: 0;
+  bottom: 8px;
   display: flex;
   justify-content: space-between;
 }
 .panel-col {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  width: 25%;
+  gap: 8px;
+  width: 28%;
   min-width: 0;
 }
 .panel-item {
@@ -519,8 +519,8 @@ onBeforeUnmount(() => {
   top: 46px;
   left: 0;
   right: 0;
-  bottom: 40px;
-  padding: 6px 10px 46px;
+  bottom: 0;
+  padding: 4px 8px 12px;
   overflow: hidden;
   box-sizing: border-box;
   z-index: 2;
@@ -530,17 +530,17 @@ onBeforeUnmount(() => {
   height: 100%;
 }
 .chart--with-tabs {
-  height: calc(100% - 64px);
+  height: calc(100% - 58px);
 }
 .direction-tabs {
   display: flex;
   gap: 8px;
-  padding: 4px 6px;
+  padding: 2px 12px 4px;
 }
 .direction-tab {
   flex: 1;
   text-align: center;
-  padding: 8px 0;
+  padding: 7px 0;
   border-radius: 6px;
   border: 1px solid rgba(63, 183, 255, 0.18);
   background: linear-gradient(135deg, rgba(20, 72, 118, 0.55), rgba(8, 24, 42, 0.25));
@@ -553,17 +553,17 @@ onBeforeUnmount(() => {
   box-shadow: inset 0 0 14px rgba(63, 183, 255, 0.45), 0 0 10px rgba(63, 183, 255, 0.35);
 }
 .chart-label {
-  padding: 6px 8px 0;
+  padding: 0 12px 0;
   color: rgba(255, 255, 255, 0.7);
   font-size: 12px;
 }
 .rank-layout {
   display: grid;
-  grid-template-columns: 160px 1fr;
-  gap: 10px;
+  grid-template-columns: 178px 1fr;
+  gap: 12px;
   height: 100%;
   color: #d7ecff;
-  padding-bottom: 18px;
+  padding: 4px 12px 10px;
   box-sizing: border-box;
 }
 .rank-total {
@@ -575,7 +575,7 @@ onBeforeUnmount(() => {
 }
 .rank-total strong {
   color: #37c6ff;
-  font-size: 30px;
+  font-size: 38px;
 }
 .rank-total span {
   margin-top: 6px;
@@ -587,7 +587,7 @@ onBeforeUnmount(() => {
   padding-right: 6px;
 }
 .rank-row {
-  padding: 4px 0;
+  padding: 5px 0;
 }
 .rank-row div {
   display: flex;
@@ -605,7 +605,7 @@ onBeforeUnmount(() => {
   white-space: nowrap;
   margin-left: 6px;
   font-size: 13px;
-  max-width: 180px;
+  max-width: 220px;
 }
 .rank-row em {
   color: #9ad9ff;
@@ -614,7 +614,7 @@ onBeforeUnmount(() => {
 }
 .rank-row i {
   display: block;
-  height: 5px;
+  height: 6px;
   margin-top: 4px;
   border-radius: 4px;
   background: linear-gradient(90deg, #3fb7ff, #2b62ff);
@@ -626,7 +626,7 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   min-height: 0;
-  padding: 4px 6px 14px 4px;
+  padding: 0 8px 8px;
   box-sizing: border-box;
 }
 .vehicle-chart {
@@ -636,19 +636,21 @@ onBeforeUnmount(() => {
   padding-right: 6px;
 }
 .vehicle-summary {
-  flex: 0 0 22%;
+  flex: 0 0 24%;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   height: 100%;
+  min-height: 0;
 }
 .vehicle-card {
   flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   justify-content: center;
   align-items: flex-start;
-  padding: 8px 10px;
+  padding: 6px 10px;
   border: 1px solid rgba(63, 183, 255, 0.25);
   border-radius: 6px;
   background: linear-gradient(135deg, rgba(18, 55, 92, 0.75), rgba(9, 26, 45, 0.35));
@@ -660,16 +662,16 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 .vehicle-card strong {
-  margin-top: 4px;
+  margin-top: 2px;
   color: #37c6ff;
-  font-size: 18px;
+  font-size: 22px;
   letter-spacing: 0.5px;
 }
 .province-tabs {
   display: flex;
   justify-content: flex-end;
   gap: 0;
-  padding: 4px;
+  padding: 4px 14px 8px;
 }
 .province-tabs button {
   min-width: 64px;
@@ -688,17 +690,17 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 8px 12px 12px;
+  padding: 6px 20px 12px;
   color: #d7ecff;
 }
 .province-row {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
-  padding: 6px 8px;
+  padding: 8px 10px;
   border-radius: 6px;
   background: rgba(16, 36, 62, 0.35);
-  font-size: 12px;
+  font-size: 13px;
 }
 .province-row span:not(:first-child) {
   text-align: right;

@@ -41,13 +41,15 @@
 
 - 正式入口为 `app.etl.cli`，支持 `live-once`、常驻 `live`、循环 `backfill`、后台任务 `worker` 和仅中心库执行的 `rebuild-facts`。
 - 实时窗口固定对齐两小时并减去安全延迟；已有成功窗口时不访问门架。
-- 历史补数默认两小时一个窗口，跨月切分、断点续跑、窗口间休眠；过去月份直接读取历史月表。
+- 实时与历史补数统一按两小时记录窗口，跨月切分、断点续跑、窗口间不休眠；过去月份直接读取历史月表。
+- 同一时间窗口重复执行时复用原 `t_etl_batch`，逐源结果按 `batch_id + source_server_id` 覆盖更新；失败源补齐后原批次从 `PARTIAL/FAILED` 更新为 `SUCCESS`，不新增第二条窗口日志。
 - 同步分为门架采集与中心处理两个阶段。源连接读取完成立即关闭；中心处理失败复用内存快照，不重新查询门架。
 - 实时、历史、手动 worker 与凌晨核对共享 `GET_LOCK('hsz:etl:source-read')`，只串行化门架读取阶段。
 - 不同物理服务器按 `HSZ_ETL_MAX_WORKERS` 可控并行，同一 IP 始终串行。
 - 源查询必须保留 `GantryId IN (...)` 与原始 `TransTime >= ... AND TransTime < ...`，禁止包装索引列或无界扫描。
 - 实时表优先，历史表仅补不存在的 `TradeId`；中心 ODS 与命中表依靠唯一键幂等。
 - 历史补数全部窗口成功后按月重建事实，不在每个窗口重复重建。
+- 中心库明细默认每 10000 行批量写入；生产 MySQL 应为 ETL 工作集配置足够的 InnoDB Buffer Pool 和 Redo Log，不能沿用 128 MiB Buffer Pool 的开发默认值。
 - HTTP 手动同步由 `python -m app.etl.cli worker` 消费。worker 每个窗口更新任务心跳；超过 `HSZ_ETL_MANUAL_JOB_STALE_MINUTES` 未更新的 RUNNING 任务可重新入队。
 
 ## 部署
