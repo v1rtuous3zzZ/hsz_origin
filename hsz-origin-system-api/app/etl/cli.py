@@ -10,6 +10,7 @@ from app.etl.job_queue import enqueue_job, get_job, run_worker
 from app.etl.task_runner import (
     aligned_live_window,
     nightly_ranges,
+    validate_backfill_range,
 )
 
 settings = EtlSettings()
@@ -62,6 +63,10 @@ def main() -> None:
     args = parser.parse_args()
 
     def enqueue(operation, start, end, **options):
+        if operation == "BACKFILL":
+            validate_backfill_range(start, end, options.get("window_minutes", 120))
+        elif start >= end:
+            parser.error("结束时间必须晚于开始时间")
         with SessionLocal.begin() as db:
             return enqueue_job(
                 db, operation=operation, start=start, end=end,

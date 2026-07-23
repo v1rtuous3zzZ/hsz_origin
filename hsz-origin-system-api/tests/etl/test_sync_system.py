@@ -300,6 +300,53 @@ def test_month_completeness_uses_latest_status_including_failure(monkeypatch):
     ) is False
 
 
+@pytest.mark.filterwarnings("ignore:The default datetime adapter is deprecated:DeprecationWarning")
+@pytest.mark.parametrize(
+    ("standard_statuses", "extra_repair", "expected"),
+    [
+        (("SUCCESS", "COMPLETE"), True, True),
+        (None, True, False),
+        (("SUCCESS", "COMPLETE", "FAILED", "UNCHECKED"), False, False),
+        (("FAILED", "UNCHECKED", "SUCCESS", "COMPLETE"), False, True),
+    ],
+)
+def test_month_completeness_compares_standard_window_set(
+        monkeypatch, standard_statuses, extra_repair, expected):
+    month_start = datetime(2026, 6, 1)
+    month_end = datetime(2026, 7, 1)
+    windows = list(task_runner.iter_windows(month_start, month_end, 120))
+    engine = create_engine("sqlite://")
+    rows = []
+    next_id = 1
+    for index, (start, end) in enumerate(windows):
+        if index == len(windows) - 1 and standard_statuses is None:
+            continue
+        values = standard_statuses or ("SUCCESS", "COMPLETE")
+        for status, check_status in zip(values[::2], values[1::2]):
+            rows.append({"id": next_id, "start": start, "end": end,
+                         "status": status, "check": check_status})
+            next_id += 1
+    if extra_repair:
+        rows.append({"id": next_id, "start": month_start + timedelta(hours=1),
+                     "end": month_start + timedelta(hours=2),
+                     "status": "SUCCESS", "check": "COMPLETE"})
+    with engine.begin() as connection:
+        connection.execute(text("""
+            CREATE TABLE t_etl_sync_log (
+                sync_log_id INTEGER PRIMARY KEY, server_code TEXT,
+                window_start DATETIME, window_end DATETIME,
+                status TEXT, check_status TEXT
+            )
+        """))
+        connection.execute(text("""
+            INSERT INTO t_etl_sync_log
+            (sync_log_id,server_code,window_start,window_end,status,check_status)
+            VALUES (:id,'S1',:start,:end,:status,:check)
+        """), rows)
+    monkeypatch.setattr(task_runner, "SessionLocal", lambda: Session(engine))
+    assert task_runner.month_is_complete(month_start, month_end, ["S1"]) is expected
+
+
 def test_single_server_backfill_does_not_rebuild_until_all_servers_complete(monkeypatch):
     monkeypatch.setattr(task_runner, "server_codes", lambda code=None: ["S1"] if code else ["S1", "S2"])
     monkeypatch.setattr(task_runner, "sync_window", lambda *a, **k: {
@@ -527,6 +574,60 @@ def test_job_queue_rejects_non_standard_backfill_window():
             MagicMock(), operation="BACKFILL", start=datetime(2026, 6, 1),
             end=datetime(2026, 7, 1), window_minutes=60,
         )
+
+
+@pytest.mark.parametrize(
+    ("start", "end"),
+    [
+        (datetime(2026, 6, 1, 1), datetime(2026, 6, 1, 5)),
+        (datetime(2026, 6, 1, 0, 30), datetime(2026, 6, 1, 4, 30)),
+        (datetime(2026, 6, 1, 0, 0, 30), datetime(2026, 6, 1, 4)),
+    ],
+)
+def test_backfill_rejects_non_aligned_ranges(start, end):
+    with pytest.raises(ValueError, match="偶数整点"):
+        task_runner.validate_backfill_range(start, end)
+
+
+def test_repair_keeps_arbitrary_range_validation_outside_backfill(monkeypatch):
+    monkeypatch.setattr(task_runner, "server_codes", lambda unused=None: ["S1"])
+    monkeypatch.setattr(task_runner, "sync_window", lambda *a, **k: {
+        "status": "SUCCESS", "check_status": "COMPLETE"
+    })
+    monkeypatch.setattr(task_runner, "rebuild_window", lambda *unused: None)
+    result = task_runner.run_range(
+        datetime(2026, 6, 30, 1, 15), datetime(2026, 7, 1, 2, 30),
+        operation="REPAIR", window_minutes=75, sleep_seconds=0,
+    )
+    assert result["status"] == "SUCCESS"
+
+
+@pytest.mark.parametrize("operation", ["LIVE", "BACKFILL", "CHECK", "REPAIR"])
+def test_run_range_rejects_empty_collectable_servers(monkeypatch, operation):
+    monkeypatch.setattr(task_runner, "server_codes", lambda unused=None: [])
+    with pytest.raises(ValueError, match="没有找到可采集服务器"):
+        task_runner.run_range(
+            datetime(2026, 6, 1), datetime(2026, 6, 1, 2),
+            operation=operation, sleep_seconds=0,
+        )
+
+
+def test_job_claim_uses_operation_priority(monkeypatch):
+    db = MagicMock()
+    db.execute.return_value.mappings.return_value.one_or_none.return_value = None
+
+    class Context:
+        def __enter__(self): return db
+        def __exit__(self, *unused): return False
+
+    monkeypatch.setattr(job_queue, "SessionLocal", SimpleNamespace(begin=lambda: Context()))
+    assert job_queue.claim_next_job() is None
+    sql = db.execute.call_args.args[0].text
+    assert "WHEN 'LIVE' THEN 1" in sql
+    assert "WHEN 'REPAIR' THEN 2" in sql
+    assert "WHEN 'CHECK' THEN 3" in sql
+    assert "WHEN 'BACKFILL' THEN 4" in sql
+    assert sql.index("CASE operation") < sql.index("job_id LIMIT 1")
 
 
 def test_live_window_is_aligned_after_safety_delay():

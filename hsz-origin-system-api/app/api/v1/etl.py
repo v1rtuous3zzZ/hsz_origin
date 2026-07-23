@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.db.dependencies import get_db
 from app.etl.job_queue import enqueue_job, get_job
+from app.etl.task_runner import validate_backfill_range
 
 router = APIRouter(prefix="/etl", tags=["etl"])
 
@@ -82,6 +83,11 @@ def query_missing_windows(db: Session) -> list[dict]:
 
 def _enqueue(db: Session, operation: str, payload: JobRequest) -> dict:
     _validate_range(payload.start, payload.end)
+    if operation == "BACKFILL":
+        try:
+            validate_backfill_range(payload.start, payload.end)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
     result = enqueue_job(db, operation=operation, start=payload.start, end=payload.end,
                          server_code=payload.server_code, force=payload.force)
     db.commit()

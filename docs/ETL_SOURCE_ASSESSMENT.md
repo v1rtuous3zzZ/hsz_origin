@@ -74,7 +74,7 @@ WHERE TransTime >= :start
 - 当前自然月只读实时表；过去自然月只读对应历史月表。
 - 查询始终包含半开时间范围和服务器实际 GantryId 列表。
 - CHECK 投影只选择 TradeId；GantryId 与 TransTime 仅用于有界 WHERE 条件。同步选择标准化需要的业务字段。
-- 默认窗口 120 分钟、源批量 2,000、单 worker、窗口休眠 5 秒、瞬时源错误最多两次重试。
+- 默认窗口 120 分钟、源批量 2,000、单 worker、窗口休眠 5 秒、瞬时源错误最多两次重试。BACKFILL 仅接受 Asia/Shanghai 偶数整点边界；任务领取优先级为 LIVE、REPAIR、CHECK、BACKFILL，systemd 以本机 `flock` 防止第二个 worker 并发读取门架。
 
 ## 尚存风险
 

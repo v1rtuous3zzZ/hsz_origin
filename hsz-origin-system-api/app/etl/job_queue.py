@@ -9,7 +9,8 @@ from sqlalchemy import text
 
 from app.db.session import SessionLocal
 from app.etl.config import EtlSettings
-from app.etl.task_runner import run_range
+from app.etl.source_config import load_mapping, load_sources
+from app.etl.task_runner import run_range, validate_backfill_range
 
 settings = EtlSettings()
 
@@ -32,8 +33,14 @@ class EtlJob:
 def enqueue_job(db, *, operation: str, start, end, server_code: str | None = None,
                 force: bool = False, window_minutes: int = 120, sleep_seconds: int = 5,
                 stop_on_error: bool = False, source_mode: str = "auto") -> dict:
-    if operation == "BACKFILL" and window_minutes != 120:
-        raise ValueError("BACKFILL 固定使用 120 分钟窗口")
+    if operation == "BACKFILL":
+        validate_backfill_range(start, end, window_minutes)
+    elif start >= end:
+        raise ValueError("结束时间必须晚于开始时间")
+    sources = load_sources(db, server_code)
+    mapped_source_ids = set(load_mapping(db))
+    if not any(source.source_server_id in mapped_source_ids for source in sources):
+        raise ValueError("没有找到可采集服务器")
     if operation == "LIVE":
         existing = db.execute(text(
             "SELECT job_id,task_no,status FROM t_etl_manual_job "
@@ -70,7 +77,10 @@ def claim_next_job() -> EtlJob | None:
         row = db.execute(text(
             "SELECT job_id,task_no,operation,window_start,window_end,server_code,force_enabled "
             ",window_minutes,sleep_seconds,stop_on_error,source_mode "
-            "FROM t_etl_manual_job WHERE status='PENDING' ORDER BY job_id LIMIT 1 FOR UPDATE"
+            "FROM t_etl_manual_job WHERE status='PENDING' ORDER BY "
+            "CASE operation WHEN 'LIVE' THEN 1 WHEN 'REPAIR' THEN 2 "
+            "WHEN 'CHECK' THEN 3 WHEN 'BACKFILL' THEN 4 ELSE 5 END, "
+            "job_id LIMIT 1 FOR UPDATE"
         )).mappings().one_or_none()
         if not row:
             return None

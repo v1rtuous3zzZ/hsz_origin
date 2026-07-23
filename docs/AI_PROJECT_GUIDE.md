@@ -36,15 +36,16 @@ POST 接口只向中心库任务队列写入记录并返回 HTTP 202。禁止在
 ## 同步规则
 
 - 核心函数是 `sync_window(server_code,start,end,operation,force=False)`；operation 仅有 `LIVE/BACKFILL/REPAIR/CHECK`。
-- 所有 CLI/API/timer 的同步、检查和补数入口只向中心任务表入队；唯一常驻 `worker` 串行读取门架并处理服务器和窗口。不使用分布式锁、命名锁、父子批次、checkpoint、递归拆窗或成功区间拼接。
+- 所有 CLI/API/timer 的同步、检查和补数入口只向中心任务表入队；唯一常驻 `worker` 串行读取门架并处理服务器和窗口。待领取任务按 LIVE、REPAIR、CHECK、BACKFILL 排序，同类任务再按 job_id 排序；不抢占运行中任务。不使用分布式锁、命名锁、父子批次、checkpoint、递归拆窗或成功区间拼接。
 - 每次实际窗口循环 INSERT 一条新 `t_etl_sync_log`；旧日志永不复用。BACKFILL 命中既有 COMPLETE 时也新增 SKIPPED 日志。
 - 当前自然月只读实时表；过去自然月只读对应历史月表；统一使用 `Asia/Shanghai`。不自动双表扫描，不用十分钟交易片段推断完整性。
 - 源 SQL 必须保留原始 `TransTime >= start AND TransTime < end AND GantryId IN (...)`。读取前以 SHOW/EXPLAIN 判断真实执行计划，不硬编码索引名或固定索引顺序。
 - 源端流式 `fetchmany`，按 TradeId 去重，读完立即关闭连接。仅瞬时网络错误在初次失败后最多重试两次，间隔 2 秒、5 秒；表、字段、配置和索引问题不重试。
 - CHECK 投影只选择 TradeId，GantryId 与 TransTime 仅用于 WHERE，不读取业务字段。完整性唯一算法是源端 TradeId 集合减中心 trade_id 集合；中心额外数据不算缺失，源端零行是 COMPLETE。
 - 非 CHECK 在关闭门架连接后标准化并写 ODS 与规则命中。中心重试只复用内存快照，禁止重新访问门架。
-- 事实重建统一由 task runner 执行：LIVE 同一两小时窗口全部目标服务器 COMPLETE 后重建一次；REPAIR 整个任务无 FAILED 和 MISSING 后按受影响自然月分别重建；BACKFILL 固定使用 120 分钟标准窗口，并在最新日志证明整自然月、全部启用可采集服务器窗口均 COMPLETE 后重建该月一次，恢复任务全部 SKIPPED 也不例外；CHECK 不重建事实。
-- BACKFILL 不接受自定义窗口分钟数。指定时间范围或小于两小时的补数使用 REPAIR；REPAIR 仍可跨月提交，并按自然月拆分事实重建。不实现任意区间覆盖合并。
+- 事实重建统一由 task runner 执行：LIVE 同一两小时窗口全部目标服务器 COMPLETE 后重建一次；REPAIR 整个任务无 FAILED 和 MISSING 后按受影响自然月分别重建；BACKFILL 固定使用 120 分钟标准窗口，并逐项比较整自然月、全部启用可采集服务器的标准窗口集合。每个服务器窗口只认最新日志的 `SUCCESS/SKIPPED + COMPLETE`；额外 REPAIR 窗口不参与判断。恢复任务全部 SKIPPED 也不例外；CHECK 不重建事实。
+- BACKFILL 的开始和结束必须是 Asia/Shanghai 语义的偶数整点，且不接受自定义窗口分钟数。指定任意时间范围或小于两小时的补数使用 REPAIR；REPAIR 仍可跨月提交，并按自然月拆分事实重建。不实现任意区间覆盖合并。
+- LIVE/BACKFILL/REPAIR/CHECK 入队和执行前都必须找到至少一个启用、`10.13.*` 可达且有有效采集门架映射的服务器，否则抛出“没有找到可采集服务器”。
 - 单 worker 启动时先把遗留 RUNNING 同步日志终止为 `FAILED/UNCHECKED`（`WorkerRestart`），再将 RUNNING 手工任务恢复为 PENDING；重跑窗口始终新增唯一同步日志。
 - `missing-windows` 以服务器、开始和结束时间分组，只取最新有效日志；新 COMPLETE 会覆盖旧 MISSING 的页面状态，但不会修改旧日志。
 
@@ -69,7 +70,7 @@ python -m app.etl.cli repair --sync-id <sync_id>
 python -m app.etl.cli worker
 ```
 
-生产运行 FastAPI、两小时实时入队 timer、唯一的 ETL worker 和每天 04:30 的夜检入队 timer。实时与夜检 timer 不直接连接门架；只有 `python -m app.etl.cli worker` 消费全部 LIVE/BACKFILL/REPAIR/CHECK。三年历史初始化应逐月提交；可通过不启用 nightly-check timer 暂时关闭夜检。
+生产运行 FastAPI、两小时实时入队 timer、唯一的 ETL worker 和每天 04:30 的夜检入队 timer。实时与夜检 timer 不直接连接门架；只有 `python -m app.etl.cli worker` 消费全部 LIVE/BACKFILL/REPAIR/CHECK。systemd 通过 `/usr/bin/flock -n /run/hsz-etl-worker.lock` 包裹 worker，第二个本机进程立即失败，进程退出后自动释放锁。历史 BACKFILL 应按一天或最多数天的小任务提交；可通过不启用 nightly-check timer 暂时关闭夜检。
 
 ## 前端设计
 

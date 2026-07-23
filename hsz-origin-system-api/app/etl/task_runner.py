@@ -10,7 +10,7 @@ from sqlalchemy import bindparam, text
 from app.db.session import SessionLocal
 from app.etl.fact_builder import rebuild
 from app.etl.ods_writer import ensure_month_tables
-from app.etl.source_config import load_sources
+from app.etl.source_config import load_mapping, load_sources
 from app.etl.sync_service import sync_window
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -62,11 +62,33 @@ def nightly_ranges(now: datetime | None = None, days: tuple[int, ...] = (1, 2)):
 
 def server_codes(server_code: str | None = None) -> list[str]:
     with SessionLocal() as db:
-        return [source.server_code for source in load_sources(db, server_code)]
+        sources = load_sources(db, server_code)
+        mapped_source_ids = set(load_mapping(db))
+        return [
+            source.server_code for source in sources
+            if source.source_server_id in mapped_source_ids
+        ]
+
+
+def validate_backfill_range(start: datetime, end: datetime,
+                            window_minutes: int = 120) -> None:
+    if start >= end:
+        raise ValueError("结束时间必须晚于开始时间")
+    if window_minutes != 120:
+        raise ValueError("BACKFILL 固定使用 120 分钟窗口")
+    for value in (start, end):
+        if value.minute or value.second or value.microsecond or value.hour % 2:
+            raise ValueError("BACKFILL 时间必须对齐 Asia/Shanghai 偶数整点两小时边界")
+        if value.tzinfo is not None and value.utcoffset() != timedelta(hours=8):
+            raise ValueError("BACKFILL 时间必须使用 Asia/Shanghai 语义")
 
 
 def month_is_complete(month_start: datetime, month_end: datetime, codes: list[str]) -> bool:
-    expected = len(list(iter_windows(month_start, month_end))) * len(codes)
+    expected_windows = {
+        (code, window_start, window_end)
+        for code in codes
+        for window_start, window_end in iter_windows(month_start, month_end, 120)
+    }
     with SessionLocal() as db:
         statement = text("""
             WITH ranked AS (
@@ -79,14 +101,26 @@ def month_is_complete(month_start: datetime, month_end: datetime, codes: list[st
                 WHERE window_start>=:start AND window_end<=:end
                   AND server_code IN :codes
             )
-            SELECT COUNT(*) FROM ranked
+            SELECT server_code,window_start,window_end,status,check_status FROM ranked
             WHERE row_no=1 AND status IN ('SUCCESS','SKIPPED')
               AND check_status='COMPLETE'
         """).bindparams(bindparam("codes", expanding=True))
-        complete = db.execute(
+        rows = db.execute(
             statement, {"start": month_start, "end": month_end, "codes": codes}
-        ).scalar_one()
-    return int(complete) == expected
+        ).mappings()
+        complete_windows = {
+            (
+                row["server_code"],
+                datetime.fromisoformat(row["window_start"]) if isinstance(
+                    row["window_start"], str
+                ) else row["window_start"],
+                datetime.fromisoformat(row["window_end"]) if isinstance(
+                    row["window_end"], str
+                ) else row["window_end"],
+            )
+            for row in rows
+        }
+    return expected_windows.issubset(complete_windows)
 
 
 def latest_lineage_id(task_no: str, start: datetime, end: datetime) -> int | None:
@@ -111,16 +145,22 @@ def run_range(start: datetime, end: datetime, *, operation: str = "BACKFILL",
               sleep_seconds: int = 5, force: bool = False,
               stop_on_error: bool = False, task_no: str | None = None,
               progress_callback=None, source_mode: str = "auto") -> dict:
-    if operation == "BACKFILL" and window_minutes != 120:
-        raise ValueError("BACKFILL 固定使用 120 分钟窗口")
+    if operation == "BACKFILL":
+        validate_backfill_range(start, end, window_minutes)
+    elif start >= end:
+        raise ValueError("结束时间必须晚于开始时间")
     task_no = task_no or f"{operation}-{uuid.uuid4().hex[:16]}"
     windows = list(iter_windows(start, end, window_minutes))
     codes = server_codes(server_code)
+    if not codes:
+        raise ValueError("没有找到可采集服务器")
     total = len(windows) * len(codes)
     recent_results = deque(maxlen=100)
     processed, failed, missing, complete = 0, 0, 0, 0
     touched_months: set[str] = set()
     all_codes = server_codes(None)
+    if not all_codes:
+        raise ValueError("没有找到可采集服务器")
     for window_start, window_end in windows:
         if operation == "BACKFILL":
             touched_months.add(window_start.strftime("%Y%m"))

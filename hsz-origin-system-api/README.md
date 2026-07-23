@@ -14,8 +14,8 @@ API 文档：`http://127.0.0.1:8000/docs`；健康检查：`/health`。
 ## ETL 迁移
 
 确认中心库备份后执行 `migrations/20260723_simplify_etl.sql`。该迁移删除旧 ETL
-批次/checkpoint 表，创建唯一窗口日志和精简任务表，并对 ODS `source_trade_id`
-建立唯一约束。只允许在中心库执行。
+批次/checkpoint 表，创建唯一窗口日志和精简任务表，并以原始 `trade_id` 作为 ODS
+主键。只允许在中心库执行。
 
 ## ETL 进程
 
@@ -41,7 +41,10 @@ ETL 不在 FastAPI 请求、startup 或 BackgroundTasks 中执行：
 
 除 `worker` 外的 CLI 与 HTTP 入口都只写中心任务队列。唯一常驻 worker 串行处理
 LIVE/BACKFILL/REPAIR/CHECK 的服务器和窗口；当前月只读实时表、过去月只读历史月表，
-不双表扫描、不递归拆窗。源读取完成即关闭连接，中心失败使用内存快照重试。
+不双表扫描、不递归拆窗。领取优先级为 LIVE、REPAIR、CHECK、BACKFILL；只影响下一条
+PENDING 任务。BACKFILL 只接受 Asia/Shanghai 偶数整点边界和 120 分钟窗口；任意范围
+使用 REPAIR。没有启用、可达且具备有效门架映射的服务器时任务直接报错。源读取完成即
+关闭连接，中心失败使用内存快照重试。
 
 ## HTTP ETL 接口
 
@@ -61,6 +64,7 @@ POST 接口只入队并返回 `job_id/task_no/status=PENDING`。`missing-windows
 ## systemd
 
 `scripts/systemd/` 提供实时入队、唯一 worker 与 `hsz-origin-nightly-check.service/.timer`。
+worker 单元使用 `/usr/bin/flock -n /run/hsz-etl-worker.lock` 保证本机单实例。
 实时和夜检 service 只入队，不读取门架；夜检默认 04:30 运行。三年初始化期间可不启用该 timer。
 
 ## 验证
