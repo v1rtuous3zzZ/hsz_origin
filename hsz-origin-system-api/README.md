@@ -13,7 +13,7 @@ API 文档：`http://127.0.0.1:8000/docs`；健康检查：`/health`。
 
 ## ETL 迁移
 
-确认中心库备份后执行 `migrations/20260723_simplify_etl.sql`。该迁移删除旧 ETL
+按维护者要求无需保留旧 ETL 数据，直接执行 `migrations/20260723_simplify_etl.sql`。该迁移删除旧 ETL
 批次/checkpoint 表，创建唯一窗口日志和精简任务表，并以原始 `trade_id` 作为 ODS
 主键。只允许在中心库执行。
 
@@ -65,7 +65,8 @@ POST 接口只入队并返回 `job_id/task_no/status=PENDING`。`missing-windows
 
 `scripts/systemd/` 提供实时入队、唯一 worker 与 `hsz-origin-nightly-check.service/.timer`。
 worker 单元使用 `/usr/bin/flock -n /run/hsz-etl-worker.lock` 保证本机单实例。
-实时和夜检 service 只入队，不读取门架；夜检默认 04:30 运行。三年初始化期间可不启用该 timer。
+实时和夜检 service 只入队，不读取门架；夜检默认 03:00 运行。中心库连续积累两个完整自然日后，
+再执行 `systemctl enable --now hsz-origin-nightly-check.timer`；此前保留 unit 但禁用 timer。
 
 ## 验证
 

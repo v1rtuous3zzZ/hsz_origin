@@ -45,6 +45,8 @@ DROP TABLE IF EXISTS t_etl_batch_source;
 DROP TABLE IF EXISTS t_etl_quality;
 DROP TABLE IF EXISTS t_data_freshness;
 DROP TABLE IF EXISTS t_etl_batch;
+DROP TABLE IF EXISTS t_etl_batch_source_bak_20260723_superseded;
+DROP TABLE IF EXISTS t_etl_batch_bak_20260723_superseded;
 DROP TABLE IF EXISTS t_etl_manual_job;
 DROP TABLE IF EXISTS t_etl_sync_log;
 

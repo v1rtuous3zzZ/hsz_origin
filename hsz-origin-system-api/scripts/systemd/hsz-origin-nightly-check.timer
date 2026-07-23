@@ -1,8 +1,8 @@
 [Unit]
-Description=Run HSZ Origin D-1/D-2 check at 04:30
+Description=Run HSZ Origin D-1/D-2 check at 03:00
 
 [Timer]
-OnCalendar=*-*-* 04:30:00 Asia/Shanghai
+OnCalendar=*-*-* 03:00:00 Asia/Shanghai
 Persistent=true
 Unit=hsz-origin-nightly-check.service
 

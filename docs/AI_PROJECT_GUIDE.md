@@ -70,7 +70,7 @@ python -m app.etl.cli repair --sync-id <sync_id>
 python -m app.etl.cli worker
 ```
 
-生产运行 FastAPI、两小时实时入队 timer、唯一的 ETL worker 和每天 04:30 的夜检入队 timer。实时与夜检 timer 不直接连接门架；只有 `python -m app.etl.cli worker` 消费全部 LIVE/BACKFILL/REPAIR/CHECK。systemd 通过 `/usr/bin/flock -n /run/hsz-etl-worker.lock` 包裹 worker，第二个本机进程立即失败，进程退出后自动释放锁。历史 BACKFILL 应按一天或最多数天的小任务提交；可通过不启用 nightly-check timer 暂时关闭夜检。
+生产运行 FastAPI、两小时实时入队 timer、唯一的 ETL worker，并保留每天 03:00 的夜检入队 timer 配置。实时与夜检 timer 不直接连接门架；只有 `python -m app.etl.cli worker` 消费全部 LIVE/BACKFILL/REPAIR/CHECK。systemd 通过 `/usr/bin/flock -n /run/hsz-etl-worker.lock` 包裹 worker，第二个本机进程立即失败，进程退出后自动释放锁。历史 BACKFILL 尚未开始；中心库连续积累两个完整自然日后，再启用 `hsz-origin-nightly-check.timer`。
 
 ## 前端设计
 

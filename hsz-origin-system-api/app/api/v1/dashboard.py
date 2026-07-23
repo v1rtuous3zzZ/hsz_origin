@@ -46,12 +46,11 @@ def _hours(start: datetime, end: datetime) -> list[datetime]:
     return result
 
 
-def _hour_labels(start: datetime, end: datetime) -> list[str]:
-    return [item.strftime("%H:00") for item in _hours(start, end)]
+def _actual_hours(rows: list[dict]) -> list[datetime]:
+    return sorted({datetime.fromisoformat(str(row["stat_hour"])) for row in rows})
 
 
-def _hour_map(rows: list[dict], start: datetime, end: datetime) -> dict[tuple, list[int]]:
-    hours = _hours(start, end)
+def _hour_map(rows: list[dict], hours: list[datetime]) -> dict[tuple, list[int]]:
     index = {item.strftime("%Y-%m-%d %H:00:00"): pos for pos, item in enumerate(hours)}
     result: dict[tuple, list[int]] = {}
     for row in rows:
@@ -83,19 +82,7 @@ def route_stack(start: datetime, end: datetime, db: Session = Depends(get_db)) -
         .mappings()
         .all()
     )
-    grouped = _hour_map([dict(row) for row in rows], start, end)
-    series = []
-    for route in ROUTES:
-        route_rows = [dict(row) for row in rows if row["route_code"] == route]
-        directions = sorted({row["direction_name"] or "未知方向" for row in route_rows})
-        for direction in directions:
-            series.append(
-                {
-                    "name": f"{route}-{direction}",
-                    "stack": route,
-                    "data": grouped.get(f"{route}|{direction}", [0] * len(_hours(start, end))),
-                }
-            )
+    row_dicts = [dict(row) for row in rows]
     local = (
         db.execute(
             text(
@@ -109,11 +96,26 @@ def route_stack(start: datetime, end: datetime, db: Session = Depends(get_db)) -
         .mappings()
         .all()
     )
-    local_map = _hour_map([dict(row) for row in local], start, end)
+    local_dicts = [dict(row) for row in local]
+    hours = _actual_hours(row_dicts + local_dicts)
+    grouped = _hour_map(row_dicts, hours)
+    local_map = _hour_map(local_dicts, hours)
+    series = []
+    for route in ROUTES:
+        route_rows = [row for row in row_dicts if row["route_code"] == route]
+        directions = sorted({row["direction_name"] or "未知方向" for row in route_rows})
+        for direction in directions:
+            series.append(
+                {
+                    "name": f"{route}-{direction}",
+                    "stack": route,
+                    "data": grouped.get(f"{route}|{direction}", []),
+                }
+            )
     series.insert(
-        0, {"name": "本路段", "data": local_map.get("local", [0] * len(_hours(start, end)))}
+        0, {"name": "本路段", "data": local_map.get("local", [])}
     )
-    return {"times": _hour_labels(start, end), "series": series}
+    return {"times": [item.strftime("%H:00") for item in hours], "series": series}
 
 
 @router.get("/direction-flow")
@@ -137,8 +139,8 @@ def direction_flow(start: datetime, end: datetime, db: Session = Depends(get_db)
         .all()
     )
     row_dicts = [dict(row) for row in rows]
-    grouped = _hour_map(row_dicts, start, end)
-    size = len(_hours(start, end))
+    hours = _actual_hours(row_dicts)
+    grouped = _hour_map(row_dicts, hours)
     routes = []
     for route in ROUTES:
         directions = sorted(
@@ -150,15 +152,15 @@ def direction_flow(start: datetime, end: datetime, db: Session = Depends(get_db)
                 "label": route,
                 "directionALabel": directions[0] if directions else "",
                 "directionBLabel": directions[1] if len(directions) > 1 else "",
-                "directionACounts": grouped.get(f"{route}|{directions[0]}", [0] * size)
+                "directionACounts": grouped.get(f"{route}|{directions[0]}", [])
                 if directions
-                else [0] * size,
-                "directionBCounts": grouped.get(f"{route}|{directions[1]}", [0] * size)
+                else [],
+                "directionBCounts": grouped.get(f"{route}|{directions[1]}", [])
                 if len(directions) > 1
-                else [0] * size,
+                else [],
             }
         )
-    return {"times": _hour_labels(start, end), "routes": routes}
+    return {"times": [item.strftime("%H:00") for item in hours], "routes": routes}
 
 
 @router.get("/local-station-flow")
@@ -185,7 +187,8 @@ def local_station_flow(
         .all()
     )
     row_dicts = [dict(row) for row in rows]
-    grouped = _hour_map(row_dicts, start, end)
+    hours = _actual_hours(row_dicts)
+    grouped = _hour_map(row_dicts, hours)
     totals = {}
     for row in row_dicts:
         totals[row["station_name"]] = totals.get(row["station_name"], 0) + int(
@@ -195,7 +198,7 @@ def local_station_flow(
         name for name, _ in sorted(totals.items(), key=lambda item: item[1], reverse=True)[:limit]
     ]
     return {
-        "times": _hour_labels(start, end),
+        "times": [item.strftime("%H:00") for item in hours],
         "series": [{"name": name, "counts": grouped.get(name, [])} for name in names],
     }
 

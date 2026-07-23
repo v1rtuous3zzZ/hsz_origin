@@ -5,7 +5,7 @@
 
 ## 数据库迁移
 
-在中心库备份确认后执行 `migrations/20260723_simplify_etl.sql`。脚本会删除重建 ODS、
+按维护者要求无需保留旧 ETL 数据，直接执行 `migrations/20260723_simplify_etl.sql`。脚本会删除重建 ODS、
 命中和同步日志，清空 15 张 ETL 派生事实表的数据并保留其结构；历史回填完成后重新
 生成事实数据。配置、字典、门架关系、规则等基础数据保留。ODS 以 `trade_id` 主键保证
 唯一。严禁在门架源库执行该脚本。
@@ -35,5 +35,5 @@ python -m app.etl.cli worker
 worker 启动时先将遗留 RUNNING 同步日志标记为 `WorkerRestart` 失败，再把 RUNNING 手工
 任务恢复为 PENDING；任务重跑会生成新的唯一同步日志。
 
-夜间 04:30 运行 `nightly-check`，默认只检查 D-1 与 D-2，各拆 12 个两小时窗口，
+夜间 03:00 运行 `nightly-check`，默认只检查 D-1 与 D-2，各拆 12 个两小时窗口，
 不自动补数。缺失仅表示 `source TradeId - center TradeId` 非空。
