@@ -9,7 +9,7 @@ from app.etl.config import EtlSettings
 from app.etl.formal_sync import sync_window
 from app.etl.source_config import load_mapping, load_sources
 from app.etl.source_lock import source_read_lock
-from app.etl.source_reader import realtime_complete_windows, source_connection, window_counts
+from app.etl.source_reader import source_connection, window_counts
 from app.etl.source_schema import monthly_table
 
 settings = EtlSettings()
@@ -99,63 +99,94 @@ def reconcile(
         sources = [source for source in load_sources(db) if mapping.get(source.source_server_id)]
         synced = latest_source_counts(db, start, end)
 
+    late_cutoff = end - timedelta(days=1)
+    ranked_candidates = []
+    for source in sources:
+        for window in windows:
+            status, center_count = synced.get(
+                (source.source_server_id, window[0]), ("MISSING", 0)
+            )
+            if status in {"FAILED", "PARTIAL", "MISSING"}:
+                priority = 0
+            elif center_count == 0:
+                priority = 1
+            elif window[1] > late_cutoff:
+                priority = 2
+            else:
+                continue
+            ranked_candidates.append((priority, window[0], source.source_server_id, window))
+    ranked_candidates.sort()
+    candidates: dict[int, list[tuple[datetime, datetime]]] = {
+        source.source_server_id: [] for source in sources
+    }
+    for _, _, source_server_id, window in ranked_candidates[:max_repairs]:
+        candidates[source_server_id].append(window)
+
+    if not execute:
+        return [
+            {
+                "window_start": window_start,
+                "window_end": window_end,
+                "server_code": source.server_code,
+                "table": (
+                    monthly_table(source.monthly_table_pattern, window_start)
+                    if window_start.strftime("%Y%m") < now.strftime("%Y%m")
+                    else source.current_table_name
+                ),
+                "previous_status": synced.get(
+                    (source.source_server_id, window_start), ("MISSING", 0)
+                )[0],
+                "result": None,
+            }
+            for source in sources
+            for window_start, window_end in candidates[source.source_server_id]
+        ]
+
     repairs = []
     with source_read_lock(
         settings.source_lock_timeout_seconds,
         enabled=settings.serialize_source_reads,
     ):
         for source in sources:
+            source_windows = candidates[source.source_server_id]
+            if not source_windows:
+                continue
             connection = None
             try:
                 connection = source_connection(source)
                 physical_codes = list(mapping[source.source_server_id])
-                complete_realtime = realtime_complete_windows(
-                    connection,
-                    source.current_table_name,
-                    physical_codes,
-                    start,
-                    end,
-                )
                 source_counts: dict[datetime, int] = {}
-
-                complete = [window for window in windows if window[0] in complete_realtime]
-                for range_start, range_end in _contiguous_ranges(complete):
-                    source_counts.update(
-                        window_counts(
-                            connection,
-                            [source.current_table_name],
-                            physical_codes,
-                            range_start,
-                            range_end,
-                        )
+                by_table: dict[str, list[tuple[datetime, datetime]]] = {}
+                for window in source_windows:
+                    table = (
+                        monthly_table(source.monthly_table_pattern, window[0])
+                        if window[0].strftime("%Y%m") < now.strftime("%Y%m")
+                        else source.current_table_name
                     )
-
-                incomplete = [
-                    window for window in windows if window[0] not in complete_realtime
-                ]
-                for range_start, range_end in _contiguous_ranges(incomplete):
-                    history_table = monthly_table(source.monthly_table_pattern, range_start)
-                    if not history_table:
+                    if not table:
                         raise RuntimeError("源库缺少窗口对应的历史月表")
-                    source_counts.update(
-                        window_counts(
-                            connection,
-                            [source.current_table_name, history_table],
-                            physical_codes,
-                            range_start,
-                            range_end,
+                    by_table.setdefault(table, []).append(window)
+                for table, table_windows in by_table.items():
+                    for range_start, range_end in _contiguous_ranges(table_windows):
+                        source_counts.update(
+                            window_counts(
+                                connection,
+                                [table],
+                                physical_codes,
+                                range_start,
+                                range_end,
+                            )
                         )
-                    )
             finally:
                 if connection:
                     connection.close()
 
-            for window_start, window_end in windows:
+            for window_start, window_end in source_windows:
                 status, synced_count = synced.get(
                     (source.source_server_id, window_start), ("MISSING", 0)
                 )
                 source_count = source_counts.get(window_start, 0)
-                if status == "FAILED" or source_count > synced_count:
+                if status in {"FAILED", "PARTIAL", "MISSING"} or source_count > synced_count:
                     repairs.append(
                         (
                             window_start,
