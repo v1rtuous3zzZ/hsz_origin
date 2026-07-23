@@ -7,8 +7,6 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import text
-
 from app.db.session import SessionLocal
 from app.etl.batch_log import finish_batch, start_batch
 from app.etl.config import EtlSettings
@@ -16,6 +14,7 @@ from app.etl.fact_builder import rebuild
 from app.etl.formal_sync import sync_window
 from app.etl.ods_writer import ensure_month_tables
 from app.etl.source_config import load_mapping, load_sources
+from app.etl.source_coverage import successful_server_codes
 
 logger = logging.getLogger("hsz.etl.orchestrator")
 settings = EtlSettings()
@@ -81,47 +80,6 @@ def expected_server_codes(server_code: str | None = None) -> set[str]:
         }
 
 
-def successful_server_codes(start: datetime, end: datetime) -> set[str]:
-    with SessionLocal() as db:
-        rows = db.execute(
-            text(
-                "SELECT server.server_code,source.actual_start,source.actual_end "
-                "FROM t_etl_batch_source source "
-                "JOIN t_etl_batch batch ON batch.batch_id=source.batch_id "
-                "JOIN t_source_server server "
-                "ON server.source_server_id=source.source_server_id "
-                "WHERE source.actual_start < :end AND source.actual_end > :start "
-                "AND source.status='SUCCESS' "
-                "ORDER BY server.server_code,source.actual_start,source.actual_end"
-            ),
-            {"start": start, "end": end},
-        )
-        intervals_by_server: dict[str, list[tuple[datetime, datetime]]] = {}
-        for server_code, actual_start, actual_end in rows:
-            intervals_by_server.setdefault(server_code, []).append(
-                (actual_start, actual_end)
-            )
-        return {
-            server_code
-            for server_code, intervals in intervals_by_server.items()
-            if _covers_window(intervals, start, end)
-        }
-
-
-def _covers_window(
-    intervals: list[tuple[datetime, datetime]], start: datetime, end: datetime
-) -> bool:
-    covered_until = start
-    for interval_start, interval_end in intervals:
-        if interval_start > covered_until:
-            return False
-        if interval_end > covered_until:
-            covered_until = interval_end
-        if covered_until >= end:
-            return True
-    return False
-
-
 def missing_server_codes(
     start: datetime, end: datetime, server_code: str | None = None
 ) -> list[str]:
@@ -172,6 +130,7 @@ def _sync_resumable_window(
             default_source_mode=default_source_mode,
             source_batch_size=source_batch_size,
             max_workers=1,
+            skip_successful_sources=resume,
         )
 
     if not resume:
@@ -184,6 +143,7 @@ def _sync_resumable_window(
             default_source_mode=default_source_mode,
             source_batch_size=source_batch_size,
             max_workers=max_workers,
+            skip_successful_sources=False,
         )
 
     expected = expected_server_codes()
@@ -197,6 +157,7 @@ def _sync_resumable_window(
             default_source_mode=default_source_mode,
             source_batch_size=source_batch_size,
             max_workers=max_workers,
+            skip_successful_sources=True,
         )
 
     missing = missing_server_codes(start, end)
@@ -217,6 +178,7 @@ def _sync_resumable_window(
             default_source_mode=default_source_mode,
             source_batch_size=source_batch_size,
             max_workers=max_workers,
+            skip_successful_sources=True,
         )
 
     results = []
@@ -232,9 +194,10 @@ def _sync_resumable_window(
                 default_source_mode=default_source_mode,
                 source_batch_size=source_batch_size,
                 max_workers=1,
+                skip_successful_sources=True,
             )
         )
-    failed = [result for result in results if result["status"] != "SUCCESS"]
+    failed = [result for result in results if result["status"] not in {"SUCCESS", "SKIPPED"}]
     fact_result = None
     if not failed and rebuild_facts:
         fact_result = rebuild_fact_range(start, end)
@@ -246,6 +209,28 @@ def _sync_resumable_window(
         "batches": results,
         "fact_rebuild": fact_result,
     }
+
+
+def _sync_history_window_with_split(start: datetime, end: datetime, **kwargs) -> dict:
+    """历史查询超时可二分到最小 30 分钟；实时入口不调用此函数。"""
+    result = _sync_resumable_window(start, end, **kwargs)
+    duration = end - start
+    if (
+        result.get("status") in {"FAILED", "PARTIAL"}
+        and "Timeout" in str(result)
+        and duration > timedelta(minutes=60)
+    ):
+        middle = start + duration / 2
+        left = _sync_history_window_with_split(start, middle, **kwargs)
+        right = _sync_history_window_with_split(middle, end, **kwargs)
+        failed = [item for item in (left, right) if item["status"] not in {"SUCCESS", "SKIPPED"}]
+        return {
+            "status": "PARTIAL" if failed else "SUCCESS",
+            "window_start": start,
+            "window_end": end,
+            "split_windows": [left, right],
+        }
+    return result
 
 
 def run_live_once(
@@ -267,7 +252,7 @@ def run_live_once(
         job_type="INCREMENTAL",
         default_source_mode="AUTO",
         source_batch_size=source_batch_size,
-        max_workers=max_workers,
+        max_workers=max_workers or settings.live_max_workers,
     )
 
 
@@ -321,6 +306,8 @@ def sync_range(
 ) -> dict:
     """循环同步历史区间；结果只保留最近若干窗口，避免长任务占满内存。"""
     window_minutes = window_minutes or settings.history_window_minutes
+    source_batch_size = source_batch_size or settings.history_source_batch_size
+    max_workers = max_workers or settings.history_max_workers
     sleep_seconds = (
         settings.history_sleep_seconds if sleep_seconds is None else sleep_seconds
     )
@@ -338,7 +325,7 @@ def sync_range(
             else "AUTO"
         )
         attempted += 1
-        result = _sync_resumable_window(
+        result = _sync_history_window_with_split(
             window_start,
             window_end,
             server_code=server_code,
@@ -394,7 +381,7 @@ def sync_range(
     return {
         "status": "SUCCESS" if failed == 0 else "PARTIAL",
         "window_count": len(windows),
-        "processed_count": attempted + skipped + failed,
+        "processed_count": attempted + skipped,
         "attempted_count": attempted,
         "skipped_count": skipped,
         "failed_count": failed,

@@ -1,5 +1,7 @@
+import logging
 import math
 from datetime import datetime
+from threading import Lock
 
 import pymysql
 from pymysql.cursors import SSDictCursor
@@ -9,6 +11,23 @@ from app.db.engine import engine
 from app.etl.models import SourceServer
 from app.etl.source_schema import resolve_columns
 
+logger = logging.getLogger("hsz.etl.source_reader")
+_index_cache: dict[tuple[str, str], bool] = {}
+_index_cache_lock = Lock()
+
+
+class SourceQueryIndexError(RuntimeError):
+    """源表缺少有界门架时间查询所需的复合索引。"""
+
+
+def is_transient_source_error(error: Exception) -> bool:
+    if isinstance(error, (TimeoutError, ConnectionError)):
+        return True
+    if isinstance(error, pymysql.OperationalError):
+        code = error.args[0] if error.args else None
+        return code in {2002, 2003, 2006, 2013}
+    return False
+
 
 def source_connection(server: SourceServer):
     """创建门架只读连接；流式游标避免一次性缓存全部结果。"""
@@ -17,21 +36,22 @@ def source_connection(server: SourceServer):
             connection.execute(
                 text(
                     "SELECT port, username, password, db_name, charset "
-                    "FROM t_source_db_config ORDER BY config_id LIMIT 1"
+                    "FROM t_source_db_config"
                 )
             )
             .mappings()
-            .one_or_none()
+            .all()
         )
-    if not config:
-        raise RuntimeError("中心库缺少 t_source_db_config 门架源库连接配置")
+    if len(config) != 1:
+        raise RuntimeError("t_source_db_config 必须且只能有一条启用的公共凭据配置")
+    config = config[0]
 
     connection = pymysql.connect(
         host=server.host_address,
-        port=config["port"],
+        port=server.host_port,
         user=config["username"],
         password=config["password"],
-        database=config["db_name"],
+        database=server.database_name,
         charset=config["charset"],
         cursorclass=SSDictCursor,
         autocommit=True,
@@ -42,6 +62,46 @@ def source_connection(server: SourceServer):
     with connection.cursor() as cursor:
         cursor.execute("SET SESSION TRANSACTION READ ONLY")
     return connection
+
+
+def validate_query_index(
+    connection,
+    server: SourceServer,
+    table: str,
+    columns: dict[str, str],
+    *,
+    required: bool,
+) -> bool:
+    """只读检查 `(GantryId, TransTime)` 前缀索引，并按服务器/表缓存。"""
+    cache_key = (server.server_code, table)
+    with _index_cache_lock:
+        cached = _index_cache.get(cache_key)
+    if cached is not None:
+        if required and not cached:
+            raise SourceQueryIndexError(f"源表 {table} 缺少 (GantryId, TransTime) 复合索引")
+        return cached
+
+    with connection.cursor() as cursor:
+        cursor.execute(f"SHOW INDEX FROM `{table}`")
+        rows = cursor.fetchall()
+    by_index: dict[str, list[tuple[int, str]]] = {}
+    for row in rows:
+        by_index.setdefault(str(row["Key_name"]), []).append(
+            (int(row["Seq_in_index"]), str(row["Column_name"]).lower())
+        )
+    expected = [columns["gantry_id"].lower(), columns["trans_time"].lower()]
+    valid = any(
+        [column for _, column in sorted(parts)][:2] == expected
+        for parts in by_index.values()
+    )
+    with _index_cache_lock:
+        _index_cache[cache_key] = valid
+    if not valid:
+        message = f"源表 {table} 缺少 (GantryId, TransTime) 复合索引"
+        if required:
+            raise SourceQueryIndexError(message)
+        logger.error(message)
+    return valid
 
 
 def read_rows(

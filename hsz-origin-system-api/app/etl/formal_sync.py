@@ -9,6 +9,7 @@
 """
 
 import logging
+import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -26,12 +27,14 @@ from app.etl.normalizer import normalize
 from app.etl.ods_writer import ensure_month_tables, write_events
 from app.etl.rule_matcher import match
 from app.etl.source_config import load_mapping, load_rules, load_sources
+from app.etl.source_coverage import successful_server_codes
 from app.etl.source_lock import source_read_lock
 from app.etl.source_reader import (
-    incomplete_realtime_physical_codes,
     inspect_remote,
+    is_transient_source_error,
     read_rows,
     source_connection,
+    validate_query_index,
 )
 from app.etl.source_schema import monthly_table, resolve_columns
 
@@ -57,6 +60,7 @@ def sync_window(
     source_retries: int | None = None,
     center_retries: int | None = None,
     default_source_mode: str = "AUTO",
+    skip_successful_sources: bool = True,
 ) -> dict:
     """同步一个单月窗口；源读取与中心库处理使用独立重试边界。"""
     if start >= end or start.strftime("%Y%m") != (end - datetime.resolution).strftime("%Y%m"):
@@ -76,24 +80,30 @@ def sync_window(
             for source in load_sources(db, server_code)
             if mapping.get(source.source_server_id)
         ]
-        batch_id, batch_no = start_batch(db, job_code, job_type, start, end)
 
     if not sources:
         error = "没有可同步且已配置物理门架的源服务器"
-        with SessionLocal.begin() as db:
-            finish_batch(db, batch_id, "FAILED", {"error_count": 1}, error)
-        return {
-            "batch_id": batch_id,
-            "batch_no": batch_no,
-            "status": "FAILED",
-            "error": error,
-        }
+        return {"status": "FAILED", "error": error}
 
     try:
         with source_read_lock(
             settings.source_lock_timeout_seconds,
             enabled=settings.serialize_source_reads,
         ):
+            if skip_successful_sources:
+                successful = successful_server_codes(start, end)
+                sources = [
+                    item for item in sources if item[0].server_code not in successful
+                ]
+                if not sources:
+                    return {
+                        "status": "SKIPPED",
+                        "reason": "等待门架读取锁期间该窗口已由其他任务完成",
+                        "window_start": start,
+                        "window_end": end,
+                    }
+            with SessionLocal.begin() as db:
+                batch_id, batch_no = start_batch(db, job_code, job_type, start, end)
             collected = _collect_sources(
                 sources,
                 start,
@@ -105,8 +115,10 @@ def sync_window(
                 default_source_mode,
             )
     except Exception as error:
-        logger.exception("batch=%s source collection failed", batch_no)
+        logger.exception("source collection failed")
         message = str(error)[:2000]
+        if "batch_id" not in locals():
+            return {"status": "FAILED", "error": message, "phase": "SOURCE_COLLECTION"}
         with SessionLocal.begin() as db:
             finish_batch(db, batch_id, "FAILED", {"error_count": 1}, message)
         return {
@@ -217,7 +229,9 @@ def _collect_source(
     raw_row_count = 0
     resolved_mode = mode
 
+    succeeded = False
     for attempt in range(1, retries + 1):
+        query_started = time.perf_counter()
         logger.info(
             "source=%s start=%s end=%s attempt=%s",
             source.server_code,
@@ -230,37 +244,37 @@ def _collect_source(
         raw_row_count = 0
         try:
             connection = source_connection(source)
-            realtime_rows = []
             if mode != "HISTORY":
                 current_table = source.current_table_name
                 columns = _resolved_source_columns(connection, source.server_code, current_table)
-                realtime_rows = list(
-                    read_rows(
-                        connection,
-                        current_table,
-                        columns,
-                        list(physical),
-                        start,
-                        end,
-                        batch_size,
-                    )
+                validate_query_index(
+                    connection,
+                    source,
+                    current_table,
+                    columns,
+                    required=settings.source_index_live_policy == "FAIL",
                 )
-                raw_row_count += len(realtime_rows)
-                for row in realtime_rows:
+                for row in read_rows(
+                    connection,
+                    current_table,
+                    columns,
+                    list(physical),
+                    start,
+                    end,
+                    batch_size,
+                ):
+                    raw_row_count += 1
                     selected_rows.setdefault(str(row["trade_id"]), (current_table, row))
 
-            history_physical = (
-                list(physical)
-                if mode == "HISTORY"
-                else incomplete_realtime_physical_codes(
-                    realtime_rows, list(physical), start, end
-                )
-            )
+            # AUTO 用于当前月最近窗口，只读实时表。缺少可靠源端水位时，
+            # 低流量不能被解释为不完整并触发第二次历史表扫描。
+            history_physical = list(physical) if mode in {"HISTORY", "MIXED"} else []
             if history_physical:
                 history_table = monthly_table(source.monthly_table_pattern, start)
                 if not history_table:
                     raise RuntimeError("源库缺少窗口对应的历史月表")
                 columns = _resolved_source_columns(connection, source.server_code, history_table)
+                validate_query_index(connection, source, history_table, columns, required=True)
                 for row in read_rows(
                     connection,
                     history_table,
@@ -274,27 +288,42 @@ def _collect_source(
                     # 实时表优先；历史表只补实时表没有的 TradeId。
                     selected_rows.setdefault(str(row["trade_id"]), (history_table, row))
 
-            if mode == "HISTORY":
-                resolved_mode = "HISTORY"
-            elif not history_physical:
-                resolved_mode = "REALTIME"
-            elif set(history_physical) == set(physical):
-                resolved_mode = "HISTORY" if not realtime_rows else "MIXED"
-            else:
-                resolved_mode = "MIXED"
+            resolved_mode = "REALTIME" if mode == "AUTO" else mode
+            succeeded = True
+            logger.info(
+                "source=%s query_seconds=%.3f rows=%s retries=%s",
+                source.server_code,
+                time.perf_counter() - query_started,
+                raw_row_count,
+                attempt - 1,
+            )
             break
         except Exception as error:
             last_error = error
-            logger.warning("source=%s attempt=%s failed: %s", source.server_code, attempt, error)
+            failure_type = type(error).__name__
+            transient = is_transient_source_error(error)
+            logger.warning(
+                "source=%s attempt=%s query_seconds=%.3f failure_type=%s transient=%s error=%s",
+                source.server_code,
+                attempt,
+                time.perf_counter() - query_started,
+                failure_type,
+                transient,
+                error,
+            )
+            if not transient:
+                break
+            if attempt < retries:
+                time.sleep(2 if attempt == 1 else 5)
         finally:
             if connection:
                 connection.close()
-    else:
+    if not succeeded:
         return (
             source,
-            Counter(source_attempt_count=retries),
+            Counter(source_attempt_count=attempt),
             [],
-            f"源读取重试 {retries} 次失败：{last_error}"[:2000],
+            f"源读取 {attempt} 次后失败（{failure_type}）：{last_error}"[:2000],
             mode,
         )
 
@@ -341,12 +370,24 @@ def _persist_collected(
 ) -> dict:
     metrics = Counter()
     completed_sources = []
-    failed_sources = []
     resolved_modes = {}
+    source_errors = {}
 
-    with SessionLocal.begin() as db:
-        ensure_month_tables(db, start.strftime("%Y%m"))
-        for source, source_metrics, events, error, resolved_mode in collected:
+    for source, source_metrics, events, error, resolved_mode in collected:
+        with SessionLocal.begin() as db:
+            already_successful = db.execute(
+                text(
+                    "SELECT status FROM t_etl_batch_source "
+                    "WHERE batch_id=:batch AND source_server_id=:source"
+                ),
+                {"batch": batch_id, "source": source.source_server_id},
+            ).scalar_one_or_none()
+            if already_successful == "SUCCESS":
+                completed_sources.append(source.source_server_id)
+                resolved_modes[source.server_code] = resolved_mode
+                continue
+
+            ensure_month_tables(db, start.strftime("%Y%m"))
             db.execute(
                 text(
                     "INSERT INTO t_etl_batch_source "
@@ -366,6 +407,7 @@ def _persist_collected(
                 },
             )
             if error:
+                source_errors[source.server_code] = error
                 db.execute(
                     text(
                         "UPDATE t_etl_batch_source SET status='FAILED',finished_at=NOW(3),"
@@ -380,7 +422,6 @@ def _persist_collected(
                     },
                 )
                 metrics["error_count"] += 1
-                failed_sources.append(source.server_code)
                 continue
 
             source_metrics["matched_event_count"] = _write(db, events, rules, batch_id)
@@ -388,7 +429,8 @@ def _persist_collected(
                 text(
                     "UPDATE t_etl_batch_source SET status='SUCCESS',finished_at=NOW(3),"
                     "source_row_count=:rows,success_event_count=:success,"
-                    "matched_event_count=:matched,error_count=0,error_summary=NULL "
+                    "matched_event_count=:matched,duplicated_count=:duplicated,"
+                    "error_count=0,error_summary=NULL "
                     "WHERE batch_id=:batch AND source_server_id=:source"
                 ),
                 {
@@ -397,17 +439,20 @@ def _persist_collected(
                     "rows": source_metrics["source_row_count"],
                     "success": source_metrics["success_event_count"],
                     "matched": source_metrics["matched_event_count"],
+                    "duplicated": source_metrics["duplicate_source_row_count"],
                 },
             )
+            advance(db, checkpoint_job_code, source.source_server_id, end, batch_id)
             metrics += source_metrics
             completed_sources.append(source.source_server_id)
             resolved_modes[source.server_code] = resolved_mode
 
-        if rebuild_facts and completed_sources:
+    if rebuild_facts and completed_sources:
+        with SessionLocal.begin() as db:
+            ensure_month_tables(db, start.strftime("%Y%m"))
             rebuild(db, start, end, batch_id)
-        for source_server_id in completed_sources:
-            advance(db, checkpoint_job_code, source_server_id, end, batch_id)
 
+    with SessionLocal.begin() as db:
         summary = db.execute(
             text(
                 "SELECT COUNT(*) source_count,"
@@ -415,6 +460,7 @@ def _persist_collected(
                 "COALESCE(SUM(source_row_count),0) source_row_count,"
                 "COALESCE(SUM(success_event_count),0) success_event_count,"
                 "COALESCE(SUM(matched_event_count),0) matched_event_count,"
+                "COALESCE(SUM(duplicated_count),0) duplicated_count,"
                 "COALESCE(SUM(error_count),0) error_count "
                 "FROM t_etl_batch_source WHERE batch_id=:batch"
             ),
@@ -449,7 +495,9 @@ def _persist_collected(
         "status": status,
         "source_modes": resolved_modes,
         "failed_sources": failed_sources,
+        "source_errors": source_errors,
         **metrics,
+        **dict(summary),
     }
 
 

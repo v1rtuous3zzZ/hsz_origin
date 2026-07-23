@@ -4,7 +4,6 @@ from sqlalchemy import text
 
 from app.db.engine import engine
 
-
 SOURCE_READ_LOCK_NAME = "hsz:etl:source-read"
 
 
