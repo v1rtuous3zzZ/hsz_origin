@@ -127,7 +127,9 @@ def _local_entry_flow(db, m, ha, hb, da, dbb, month, month_end, batch):
     )
     db.execute(
         text(
-            "INSERT INTO t_fact_local_entry_flow_monthly (stat_month,event_count,last_batch_id) SELECT :month,SUM(event_count),:batch FROM t_fact_local_entry_flow_daily WHERE stat_date>=:month AND stat_date<:month_end"
+            "INSERT INTO t_fact_local_entry_flow_monthly (stat_month,event_count,last_batch_id) "
+            "SELECT :month,SUM(event_count),:batch FROM t_fact_local_entry_flow_daily "
+            "WHERE stat_date>=:month AND stat_date<:month_end HAVING COUNT(*)>0"
         ),
         {"month": month, "month_end": month_end, "batch": batch},
     )

@@ -8,8 +8,8 @@ from app.etl.success_policy import is_success
 
 
 def event_key(source_server_id: int, source_trade_id: str) -> bytes:
-    value = f"{source_server_id}|{source_trade_id}".encode()
-    return hashlib.sha256(value).digest()
+    """TradeId 全渠道唯一；保留首参仅兼容现有调用点。"""
+    return hashlib.sha256(source_trade_id.encode()).digest()
 
 
 def plate_number(value: object) -> str | None:

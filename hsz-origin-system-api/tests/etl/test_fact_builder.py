@@ -14,3 +14,5 @@ def test_monthly_facts_are_aggregated_from_daily_facts() -> None:
     assert len(monthly_inserts) == 5
     assert all("_daily" in sql for sql in monthly_inserts)
     assert all("t_event_object_match_202607" not in sql for sql in monthly_inserts)
+    local_entry = next(sql for sql in monthly_inserts if "local_entry_flow_monthly" in sql)
+    assert "HAVING COUNT(*)>0" in local_entry

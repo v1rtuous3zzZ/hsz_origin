@@ -1,0 +1,10 @@
+[Unit]
+Description=Enqueue HSZ Origin live window every two hours
+
+[Timer]
+OnCalendar=*-*-* 00/2:15:00 Asia/Shanghai
+Persistent=true
+Unit=hsz-origin-etl.service
+
+[Install]
+WantedBy=timers.target

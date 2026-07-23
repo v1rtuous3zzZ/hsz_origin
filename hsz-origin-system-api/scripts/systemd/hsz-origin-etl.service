@@ -1,0 +1,12 @@
+[Unit]
+Description=Enqueue HSZ Origin latest live window
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/hsz-origin/api
+Environment=PYTHONPATH=/opt/hsz-origin/api
+EnvironmentFile=/opt/hsz-origin/config/api.env
+ExecStart=/opt/hsz-origin/api/venv/bin/python scripts/run_live_sync.py
+StandardOutput=append:/opt/hsz-origin/logs/etl-enqueue.log
+StandardError=append:/opt/hsz-origin/logs/etl-enqueue.log

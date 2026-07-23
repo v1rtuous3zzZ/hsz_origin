@@ -35,3 +35,23 @@ def resolve_columns(columns: list[str]) -> dict[str, str]:
 
 def monthly_table(pattern: str | None, when) -> str | None:
     return pattern.replace("{yyyyMM}", when.strftime("%Y%m")) if pattern else None
+
+
+def source_table(server, window_start, now, source_mode: str = "auto") -> str:
+    """当前自然月固定读实时表，过去自然月固定读对应历史月表。"""
+    mode = source_mode.lower()
+    if mode == "realtime":
+        return server.current_table_name
+    if mode == "history":
+        table = monthly_table(server.monthly_table_pattern, window_start)
+        if not table:
+            raise ValueError("源服务器未配置历史月表")
+        return table
+    if mode != "auto":
+        raise ValueError("source_mode 只能是 auto、realtime 或 history")
+    if window_start.strftime("%Y%m") == now.strftime("%Y%m"):
+        return server.current_table_name
+    table = monthly_table(server.monthly_table_pattern, window_start)
+    if not table:
+        raise ValueError("源服务器未配置历史月表")
+    return table

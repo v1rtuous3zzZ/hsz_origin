@@ -1,24 +1,34 @@
-# ETL
+# ETL 运行说明
 
-ETL 是独立 CLI 进程；它不运行在 FastAPI lifespan、请求线程或 Uvicorn worker 中。
+所有命令和 HTTP 入口先写中心任务队列，唯一常驻 worker 串行处理“一个服务器 + 一个时间窗口”。门架连接仅执行带
+`GantryId IN (...)` 和 `[start,end)` 时间条件的只读查询，读取结束立即关闭。
+
+## 数据库迁移
+
+在中心库备份确认后执行 `migrations/20260723_simplify_etl.sql`。脚本会删除旧批次、
+源批次、checkpoint 和 quality 表，创建 `t_etl_sync_log`、精简任务表，并为所有
+ODS 月表的 `source_trade_id` 增加唯一约束。严禁在门架源库执行该脚本。
 
 ## 命令
 
 ```powershell
-python -m app.etl.cli inspect --source-mode legacy-test
-python -m app.etl.cli live-once --source-mode legacy-test --start "2026-06-26 09:30:00" --end "2026-06-26 09:40:00" --dry-run
-python -m app.etl.cli backfill --source-mode legacy-test --start "..." --end "..." --window-minutes 60 --job-name legacy_test --dry-run
-python -m app.etl.cli status
+python -m app.etl.cli live-once
+python -m app.etl.cli live
+python -m app.etl.cli backfill --start 2026-01-01T00:00:00 --end 2026-02-01T00:00:00
+python -m app.etl.cli nightly-check --days 1 2
+python -m app.etl.cli repair --sync-id <sync_id>
+python -m app.etl.cli repair --server <server_code> --start <start> --end <end>
+python -m app.etl.cli worker
 ```
 
-源凭据由 `CREDENTIAL_KEY_USER` 和 `CREDENTIAL_KEY_PASSWORD` 环境变量提供，例如 `SOURCE_DB_DEFAULT_USER`。不提供凭据时 remote 读取会失败，不会回退到默认账号。
+前五类命令只入队；只有最后的 `worker` 读取门架。生产不得启动第二个 worker。
 
-同步不使用跨任务 MySQL 命名锁；断点按 `job_code + source_server_id` 保存，只有全窗口成功且事实重算成功后才推进。事件键是 `SHA256(source_server_id|source_trade_id)`，月度 ODS 和命中表用唯一键实现幂等。源连接只用于读取明细并立即释放，转换、批量匹配写入和事实重建都在中心库完成。
+当前月固定读 `dfs_gantry_transaction`，过去月固定读 `dfs_gantry_transactionYYYYMM`；
+调试时可显式指定 `--source-mode realtime|history`。不会双表扫描或自动拆窗。
 
-每个物理门架都由中心库动态映射；同一逻辑 HEX 的两个物理门架都读取并自然聚合，绝不按逻辑门架去重。
+历史初始化建议逐月提交。默认窗口 120 分钟、流式批量 2000、窗口间休眠 5 秒、
+单 worker。BACKFILL 在同月全部窗口完成后只重建一次事实；LIVE 与 REPAIR 重建当前
+窗口事实；CHECK 不写业务数据。
 
-当前远程网络只可访问沿江公司 `10.13.*` 网段。`t_physical_gantry.collection_enabled=1` 的 32 条门架是本项目正式采集范围，其中当前可达范围为 26 条；未纳入该范围或位于不可达网段的门架不得默认作为实际采集源。已知可取得的出本路段数据可能仅覆盖 G50，外部方向必须如实报告为不可达或待确认。
-
-事实重算只能由协调器在全部源成功后集中执行，不能在每个源线程中累加。当前实现提供安全的 dry-run 验证路径；正式写入前仍须确认成功交易口径、上一门架介质选择和所有事实表重算 SQL。
-
-当前 remote 成功交易口径未确认，故 remote 模式拒绝 `ALL_ROWS_TEST`；legacy-test dry-run 使用该测试口径。车型字典以 `t_vehicle_type_dict` 为准，未知值应使用 `UNKNOWN`，不猜测车型分类。legacy-test 只读 `hsz_origin_sys.t_gantry_transaction`，不代表所有正式源库。
+夜间 04:30 运行 `nightly-check`，默认只检查 D-1 与 D-2，各拆 12 个两小时窗口，
+不自动补数。缺失仅表示 `source TradeId - center TradeId` 非空。

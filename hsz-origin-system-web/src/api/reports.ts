@@ -11,39 +11,40 @@ import type {
   VehicleTypeRow,
 } from "../types/reports";
 
-export interface SyncBatch {
-  batch_id: number;
-  batch_no: string;
-  status: "SUCCESS" | "PARTIAL" | "FAILED" | "RUNNING";
+export interface SyncLog {
+  sync_id: string;
+  task_no: string;
+  operation: "LIVE" | "BACKFILL" | "REPAIR" | "CHECK";
+  server_code: string;
+  source_table: string | null;
+  status: "SUCCESS" | "FAILED" | "RUNNING" | "SKIPPED";
+  check_status: "UNCHECKED" | "COMPLETE" | "MISSING";
   window_start: string;
   window_end: string;
   started_at: string;
   finished_at: string | null;
-  source_row_count: number;
-  success_event_count: number;
-  matched_event_count: number;
-  error_count: number;
-  error_summary: string | null;
+  source_unique_count: number;
+  center_matched_count: number;
+  missing_count: number;
+  inserted_count: number;
+  query_duration_ms: number;
+  total_duration_ms: number;
+  error_message: string | null;
 }
 
 export interface ManualSyncJob {
   job_id: number;
-  job_no: string;
+  task_no: string;
   status: "PENDING" | "RUNNING" | "SUCCESS" | "PARTIAL" | "FAILED";
-  window_start: string;
-  window_end: string;
-  status_url: string;
 }
 
 export interface SyncLogResult {
   total: number;
-  items: SyncBatch[];
-  summary: null | {
-    success_count: number;
-    failed_count: number;
-    running_count: number;
-    missing_windows: { start: string; end: string }[];
-  };
+  items: SyncLog[];
+}
+
+export interface MissingWindow extends Pick<SyncLog, "server_code" | "window_start" | "window_end" | "source_unique_count" | "center_matched_count" | "missing_count" | "check_status"> {
+  latest_sync_id: string;
 }
 
 const params = (query: ReportQuery) => ({
@@ -94,17 +95,20 @@ export const getEntryProvinces = (query: ReportQuery) =>
       params: params(query),
     })
     .then(({ data }) => data);
-export const getSyncLogs = (start: string, end: string, status?: string) =>
+export const getSyncLogs = (start: string, end: string, status?: string, page = 1, pageSize = 20) =>
   request
-    .get<SyncLogResult>("/etl/batches", {
-      params: { start, end, status, page_size: 100 },
+    .get<SyncLogResult>("/etl/sync-logs", {
+      params: { start, end, status, page, page_size: pageSize },
     })
     .then(({ data }) => data);
+export const getMissingWindows = () => request
+  .get<{ items: MissingWindow[] }>("/etl/missing-windows")
+  .then(({ data }) => data.items);
 export const startManualSync = (start: string, end: string) =>
   request
-    .post<ManualSyncJob>("/etl/manual-sync", { start, end })
+    .post<ManualSyncJob>("/etl/jobs/backfill", { start, end })
     .then(({ data }) => data);
-export const retrySyncSource = (batchId: number, sourceId: number) =>
+export const repairSyncWindow = (syncId: string) =>
   request
-    .post<ManualSyncJob>(`/etl/batches/${batchId}/sources/${sourceId}/retry`)
+    .post<ManualSyncJob>(`/etl/sync-logs/${syncId}/repair`)
     .then(({ data }) => data);
