@@ -6,7 +6,6 @@ from zoneinfo import ZoneInfo
 from app.db.session import SessionLocal
 from app.etl.center_writer import normalize_rows, write_snapshot
 from app.etl.config import EtlSettings
-from app.etl.fact_builder import rebuild
 from app.etl.source_config import load_mapping, load_rules, load_sources
 from app.etl.source_reader import read_source_snapshot
 from app.etl.source_schema import source_table
@@ -38,7 +37,7 @@ def write_with_retry(events, rules, sync_log_id: int) -> dict:
 
 def sync_window(server_code: str, start: datetime, end: datetime, operation: str,
                 force: bool = False, *, task_no: str | None = None,
-                source_mode: str = "auto", rebuild_facts: bool = False) -> dict:
+                source_mode: str = "auto") -> dict:
     """处理一个门架服务器和一个不跨月时间窗口。"""
     operation = operation.upper()
     if operation not in OPERATIONS:
@@ -81,8 +80,6 @@ def sync_window(server_code: str, start: datetime, end: datetime, operation: str
             found = center_trade_ids(db, source_ids, start.strftime("%Y%m"))
             missing = missing_trade_ids(source_ids, found)
             check_status = "COMPLETE" if not missing else "MISSING"
-            if rebuild_facts and operation != "CHECK" and not missing:
-                rebuild(db, start, end, sync_log_id)
             finish_sync(
                 db, sync_id, status="SUCCESS", check_status=check_status,
                 source_table=table, source_unique_count=len(source_ids),

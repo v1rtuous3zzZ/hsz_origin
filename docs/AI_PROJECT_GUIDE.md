@@ -31,7 +31,7 @@ POST 接口只向中心库任务队列写入记录并返回 HTTP 202。禁止在
 | 事实 | `t_fact_flow_*`、`t_fact_local_entry_flow_*`、`t_fact_vehicle_type_*`、`t_fact_source_station_*` |
 | ETL | `t_etl_sync_log`、`t_etl_manual_job` |
 
-`source_trade_id` 即门架 `TradeId`，全渠道唯一。各 ODS 月表必须有该字段的唯一约束。迁移脚本是 `hsz-origin-system-api/migrations/20260723_simplify_etl.sql`，不得只手工改库。
+`trade_id` 即门架原始 `TradeId`，全渠道唯一。各 ODS 月表必须有该字段的唯一约束。迁移脚本是 `hsz-origin-system-api/migrations/20260723_simplify_etl.sql`，不得只手工改库。
 
 ## 同步规则
 
@@ -41,9 +41,9 @@ POST 接口只向中心库任务队列写入记录并返回 HTTP 202。禁止在
 - 当前自然月只读实时表；过去自然月只读对应历史月表；统一使用 `Asia/Shanghai`。不自动双表扫描，不用十分钟交易片段推断完整性。
 - 源 SQL 必须保留原始 `TransTime >= start AND TransTime < end AND GantryId IN (...)`。读取前以 SHOW/EXPLAIN 判断真实执行计划，不硬编码索引名或固定索引顺序。
 - 源端流式 `fetchmany`，按 TradeId 去重，读完立即关闭连接。仅瞬时网络错误在初次失败后最多重试两次，间隔 2 秒、5 秒；表、字段、配置和索引问题不重试。
-- CHECK 投影只选择 TradeId，GantryId 与 TransTime 仅用于 WHERE，不读取业务字段。完整性唯一算法是 `source_trade_ids - center_trade_ids`；中心额外数据不算缺失，源端零行是 COMPLETE。
-- 非 CHECK 在关闭门架连接后标准化并写 ODS、规则命中与事实。中心重试只复用内存快照，禁止重新访问门架。
-- LIVE/REPAIR 成功后重建窗口事实；BACKFILL 仅在最新日志证明整自然月、全部服务器窗口均 COMPLETE 后重建该月一次；CHECK 不重建事实。
+- CHECK 投影只选择 TradeId，GantryId 与 TransTime 仅用于 WHERE，不读取业务字段。完整性唯一算法是源端 TradeId 集合减中心 trade_id 集合；中心额外数据不算缺失，源端零行是 COMPLETE。
+- 非 CHECK 在关闭门架连接后标准化并写 ODS 与规则命中。中心重试只复用内存快照，禁止重新访问门架。
+- 事实重建统一由 task runner 执行：LIVE 同一两小时窗口全部目标服务器 COMPLETE 后重建一次；REPAIR 一个任务全部 COMPLETE 后重建一次；BACKFILL 仅在最新日志证明整自然月、全部启用可采集服务器窗口均 COMPLETE 后重建该月一次；CHECK 不重建事实。
 - `missing-windows` 以服务器、开始和结束时间分组，只取最新有效日志；新 COMPLETE 会覆盖旧 MISSING 的页面状态，但不会修改旧日志。
 
 默认配置：

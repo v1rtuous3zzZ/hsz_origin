@@ -7,7 +7,7 @@
 
 在中心库备份确认后执行 `migrations/20260723_simplify_etl.sql`。脚本会删除旧批次、
 源批次、checkpoint 和 quality 表，创建 `t_etl_sync_log`、精简任务表，并为所有
-ODS 月表的 `source_trade_id` 增加唯一约束。严禁在门架源库执行该脚本。
+ODS 月表的 `trade_id` 增加唯一约束。严禁在门架源库执行该脚本。
 
 ## 命令
 

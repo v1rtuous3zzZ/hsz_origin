@@ -1,37 +1,27 @@
--- 新 ETL 日志与任务结构。仅在中心库 hsz_origin 执行，严禁在门架源库执行。
--- 先校验所有 ODS 月表不存在重复 TradeId；任何异常都在删除旧 ETL 表之前终止。
+-- ETL TradeId 主键简化迁移。仅允许在中心库 hsz_origin 执行，严禁在门架源库执行。
+-- 破坏性操作范围：旧 ETL 日志/任务表、ODS 模板/月表和命中模板/月表会被删除重建。
+-- 原因：TradeId 已确认为全渠道唯一，旧 event_key/source_trade_id 双标识结构不再保留。
+
 DELIMITER $$
-CREATE PROCEDURE assert_ods_trade_id_unique()
+CREATE PROCEDURE assert_center_database_for_trade_id_migration()
 BEGIN
-    DECLARE done INT DEFAULT 0;
-    DECLARE table_name_value VARCHAR(128);
-    DECLARE tables_cursor CURSOR FOR
-        SELECT TABLE_NAME FROM information_schema.TABLES
-        WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME REGEXP '^t_ods_event_[0-9]{6}$';
-    DECLARE CONTINUE HANDLER FOR NOT FOUND SET done=1;
-    OPEN tables_cursor;
-    table_loop: LOOP
-        FETCH tables_cursor INTO table_name_value;
-        IF done=1 THEN LEAVE table_loop; END IF;
-        SET @duplicate_count=0;
-        SET @sql_text=CONCAT(
-            'SELECT COUNT(*) INTO @duplicate_count FROM (SELECT source_trade_id FROM `',
-            table_name_value,
-            '` GROUP BY source_trade_id HAVING COUNT(*)>1 LIMIT 1) duplicate_trade_ids'
-        );
-        PREPARE statement_value FROM @sql_text;
-        EXECUTE statement_value;
-        DEALLOCATE PREPARE statement_value;
-        IF @duplicate_count>0 THEN
-            SIGNAL SQLSTATE '45000'
-                SET MESSAGE_TEXT='ODS 月表存在重复 source_trade_id，迁移已在删除旧 ETL 表前停止';
-        END IF;
-    END LOOP;
-    CLOSE tables_cursor;
+    IF DATABASE() <> 'hsz_origin' THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT='当前数据库不是允许迁移的中心库 hsz_origin，已停止';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM information_schema.TABLES
+        WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='dfs_gantry_transaction'
+    ) THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT='当前库疑似门架源库，严禁执行中心库迁移';
+    END IF;
 END$$
-CALL assert_ods_trade_id_unique()$$
-DROP PROCEDURE assert_ods_trade_id_unique$$
+CALL assert_center_database_for_trade_id_migration()$$
+DROP PROCEDURE assert_center_database_for_trade_id_migration$$
 DELIMITER ;
+
+DROP PROCEDURE IF EXISTS sp_create_event_month_tables;
 
 DROP TABLE IF EXISTS t_etl_checkpoint;
 DROP TABLE IF EXISTS t_etl_batch_source;
@@ -39,6 +29,36 @@ DROP TABLE IF EXISTS t_etl_quality;
 DROP TABLE IF EXISTS t_data_freshness;
 DROP TABLE IF EXISTS t_etl_batch;
 DROP TABLE IF EXISTS t_etl_manual_job;
+DROP TABLE IF EXISTS t_etl_sync_log;
+
+DELIMITER $$
+CREATE PROCEDURE drop_trade_id_month_tables()
+BEGIN
+    DECLARE done INT DEFAULT 0;
+    DECLARE table_name_value VARCHAR(128);
+    DECLARE tables_cursor CURSOR FOR
+        SELECT TABLE_NAME FROM information_schema.TABLES
+        WHERE TABLE_SCHEMA=DATABASE()
+          AND (TABLE_NAME REGEXP '^t_ods_event_[0-9]{6}$'
+               OR TABLE_NAME REGEXP '^t_event_object_match_[0-9]{6}$');
+    DECLARE CONTINUE HANDLER FOR NOT FOUND SET done=1;
+    OPEN tables_cursor;
+    table_loop: LOOP
+        FETCH tables_cursor INTO table_name_value;
+        IF done=1 THEN LEAVE table_loop; END IF;
+        SET @sql_text=CONCAT('DROP TABLE IF EXISTS `', table_name_value, '`');
+        PREPARE statement_value FROM @sql_text;
+        EXECUTE statement_value;
+        DEALLOCATE PREPARE statement_value;
+    END LOOP;
+    CLOSE tables_cursor;
+END$$
+CALL drop_trade_id_month_tables()$$
+DROP PROCEDURE drop_trade_id_month_tables$$
+DELIMITER ;
+
+DROP TABLE IF EXISTS t_event_object_match_template;
+DROP TABLE IF EXISTS t_ods_event_template;
 
 CREATE TABLE t_etl_sync_log (
     sync_log_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '中心写入链路使用的内部日志主键',
@@ -110,35 +130,67 @@ CREATE TABLE t_etl_manual_job (
     CONSTRAINT ck_etl_job_window CHECK (window_end > window_start)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='单 worker 串行消费的 ETL 后台任务';
 
--- TradeId 已确认全渠道唯一；所有现有 ODS 月表和模板按该字段幂等。
+CREATE TABLE t_ods_event_template (
+    trade_id VARCHAR(38) CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT '门架原始 TradeId，全渠道唯一交易标识',
+    source_server_id BIGINT UNSIGNED NOT NULL COMMENT '门架源服务器主键，仅用于来源追踪',
+    source_table_name VARCHAR(128) NOT NULL COMMENT '门架源表名，仅用于来源追踪',
+    event_time DATETIME(3) NOT NULL COMMENT '交易发生时间，来自门架 TransTime',
+    entry_time DATETIME(3) NULL COMMENT '入口时间，来自门架 EnTime',
+    vehicle_plate_no VARCHAR(32) NULL COMMENT '车牌号码，已去除颜色后缀',
+    current_physical_gantry_code VARCHAR(32) NOT NULL COMMENT '当前物理门架编码，来自 GantryId',
+    current_gantry_hex VARCHAR(32) NOT NULL COMMENT '当前逻辑门架十六进制编码',
+    previous_gantry_hex VARCHAR(32) NULL COMMENT '上游逻辑门架十六进制编码',
+    previous_gantry_source VARCHAR(32) NULL COMMENT '上游门架字段来源',
+    raw_previous_gantry_json JSON NULL COMMENT '上游门架原始候选字段',
+    vehicle_type_code VARCHAR(16) NULL COMMENT '车型编码',
+    entry_station_code VARCHAR(32) NULL COMMENT '入口收费站编码',
+    media_type VARCHAR(16) NULL COMMENT '交易介质类型',
+    trade_result VARCHAR(16) NULL COMMENT '交易结果',
+    obu_trade_result VARCHAR(16) NULL COMMENT 'OBU 交易结果',
+    success_flag TINYINT(1) NOT NULL COMMENT '是否按当前成功策略判定为成功交易',
+    success_rule_code VARCHAR(64) NOT NULL COMMENT '成功策略命中规则编码',
+    batch_id BIGINT UNSIGNED NOT NULL COMMENT '写入该行的 ETL 日志主键',
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '创建时间',
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '更新时间',
+    PRIMARY KEY (trade_id),
+    UNIQUE KEY uk_ods_trade_id (trade_id),
+    KEY idx_ods_event_time (event_time),
+    KEY idx_ods_source (source_server_id,source_table_name,event_time),
+    KEY idx_ods_current_gantry (current_gantry_hex,event_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='中心 ODS 交易事件模板表';
+
+CREATE TABLE t_event_object_match_template (
+    match_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '命中记录主键',
+    trade_id VARCHAR(38) CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT '门架原始 TradeId，关联 ODS 交易事件',
+    event_time DATETIME(3) NOT NULL COMMENT '交易发生时间',
+    source_server_id BIGINT UNSIGNED NOT NULL COMMENT '门架源服务器主键',
+    object_no BIGINT UNSIGNED NOT NULL COMMENT '统计对象编号',
+    rule_no BIGINT UNSIGNED NOT NULL COMMENT '命中的规则编号',
+    previous_gantry_hex VARCHAR(32) NULL COMMENT '上游逻辑门架十六进制编码',
+    current_gantry_hex VARCHAR(32) NOT NULL COMMENT '当前逻辑门架十六进制编码',
+    entry_station_code VARCHAR(32) NULL COMMENT '入口收费站编码',
+    vehicle_type_code VARCHAR(16) NULL COMMENT '车型编码',
+    vehicle_category_code VARCHAR(16) NOT NULL COMMENT '车型分类编码',
+    batch_id BIGINT UNSIGNED NOT NULL COMMENT '写入该行的 ETL 日志主键',
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '创建时间',
+    PRIMARY KEY (match_id),
+    UNIQUE KEY uk_event_object_match (trade_id,object_no),
+    KEY idx_match_event_time (event_time),
+    KEY idx_match_object_time (object_no,event_time),
+    KEY idx_match_trade_id (trade_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='交易事件统计对象命中模板表';
+
 DELIMITER $$
-CREATE PROCEDURE migrate_ods_trade_id_unique()
+CREATE PROCEDURE sp_create_event_month_tables(IN p_month CHAR(6))
 BEGIN
-    DECLARE done INT DEFAULT 0;
-    DECLARE table_name_value VARCHAR(128);
-    DECLARE tables_cursor CURSOR FOR
-        SELECT TABLE_NAME FROM information_schema.TABLES
-        WHERE TABLE_SCHEMA=DATABASE()
-          AND (TABLE_NAME='t_ods_event_template' OR TABLE_NAME REGEXP '^t_ods_event_[0-9]{6}$');
-    DECLARE CONTINUE HANDLER FOR NOT FOUND SET done=1;
-    OPEN tables_cursor;
-    table_loop: LOOP
-        FETCH tables_cursor INTO table_name_value;
-        IF done=1 THEN LEAVE table_loop; END IF;
-        SET @sql_text=CONCAT('ALTER TABLE `',table_name_value,
-            '` ADD UNIQUE KEY uk_ods_source_trade_id (source_trade_id)');
-        IF NOT EXISTS (
-            SELECT 1 FROM information_schema.STATISTICS
-            WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=table_name_value
-              AND INDEX_NAME='uk_ods_source_trade_id'
-        ) THEN
-            PREPARE statement_value FROM @sql_text;
-            EXECUTE statement_value;
-            DEALLOCATE PREPARE statement_value;
-        END IF;
-    END LOOP;
-    CLOSE tables_cursor;
+    IF p_month NOT REGEXP '^[0-9]{6}$' THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='月份参数必须为 yyyyMM';
+    END IF;
+    SET @ods_table=CONCAT('t_ods_event_', p_month);
+    SET @match_table=CONCAT('t_event_object_match_', p_month);
+    SET @sql_text=CONCAT('CREATE TABLE IF NOT EXISTS `', @ods_table, '` LIKE t_ods_event_template');
+    PREPARE statement_value FROM @sql_text; EXECUTE statement_value; DEALLOCATE PREPARE statement_value;
+    SET @sql_text=CONCAT('CREATE TABLE IF NOT EXISTS `', @match_table, '` LIKE t_event_object_match_template');
+    PREPARE statement_value FROM @sql_text; EXECUTE statement_value; DEALLOCATE PREPARE statement_value;
 END$$
-CALL migrate_ods_trade_id_unique()$$
-DROP PROCEDURE migrate_ods_trade_id_unique$$
 DELIMITER ;

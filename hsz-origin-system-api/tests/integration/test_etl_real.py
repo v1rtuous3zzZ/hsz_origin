@@ -17,14 +17,14 @@ def test_repair_creates_new_log_and_does_not_duplicate_trade_id() -> None:
     server = os.environ["HSZ_TEST_SERVER_CODE"]
     start = datetime.fromisoformat(os.environ["HSZ_TEST_WINDOW_START"])
     end = datetime.fromisoformat(os.environ["HSZ_TEST_WINDOW_END"])
-    first = sync_window(server, start, end, "REPAIR", True, rebuild_facts=True)
-    second = sync_window(server, start, end, "REPAIR", True, rebuild_facts=True)
+    first = sync_window(server, start, end, "REPAIR", True)
+    second = sync_window(server, start, end, "REPAIR", True)
     assert first["sync_id"] != second["sync_id"]
     assert first["check_status"] == second["check_status"] == "COMPLETE"
     with SessionLocal() as db:
         counts = db.execute(
             text(
-                f"SELECT COUNT(*) row_count,COUNT(DISTINCT source_trade_id) unique_count "
+                f"SELECT COUNT(*) row_count,COUNT(DISTINCT trade_id) unique_count "
                 f"FROM `t_ods_event_{start:%Y%m}` "
                 "WHERE event_time>=:start AND event_time<:end"
             ),

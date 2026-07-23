@@ -81,6 +81,16 @@ def claim_next_job() -> EtlJob | None:
                   int(row["sleep_seconds"]), bool(row["stop_on_error"]), row["source_mode"])
 
 
+def recover_running_jobs() -> int:
+    with SessionLocal.begin() as db:
+        result = db.execute(text(
+            "UPDATE t_etl_manual_job SET status='PENDING',started_at=NULL,"
+            "finished_at=NULL,error_message='worker 重启，任务重新入队' "
+            "WHERE status='RUNNING'"
+        ))
+        return int(result.rowcount or 0)
+
+
 def _progress(job_id: int, values: dict) -> None:
     fields = ("total_windows", "processed_windows", "complete_windows",
               "missing_windows", "failed_windows")
@@ -118,6 +128,7 @@ def execute_job(job: EtlJob) -> dict:
 def run_worker(*, once: bool = False, poll_seconds: int | None = None,
                max_jobs: int | None = None) -> dict:
     poll_seconds = poll_seconds or settings.manual_job_poll_seconds
+    recovered = recover_running_jobs()
     processed = 0
     while max_jobs is None or processed < max_jobs:
         job = claim_next_job()
@@ -130,4 +141,5 @@ def run_worker(*, once: bool = False, poll_seconds: int | None = None,
         processed += 1
         if once:
             break
-    return {"status": "IDLE" if not processed else "SUCCESS", "processed_count": processed}
+    return {"status": "IDLE" if not processed else "SUCCESS",
+            "processed_count": processed, "recovered_count": recovered}

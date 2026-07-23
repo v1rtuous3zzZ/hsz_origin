@@ -35,7 +35,7 @@ def main() -> None:
                 db.execute(
                     text(
                         f"INSERT INTO t_fact_local_entry_flow_{grain} ({key},event_count) "
-                        f"SELECT {period},COUNT(DISTINCT m.event_key) FROM `{match_table}` m "
+                        f"SELECT {period},COUNT(DISTINCT m.trade_id) FROM `{match_table}` m "
                         "JOIN t_toll_station s ON s.station_code=m.entry_station_code "
                         "JOIN t_local_entry_station l ON l.toll_station_id=s.toll_station_id AND l.enabled=1 "
                         f"GROUP BY {period}"
@@ -44,7 +44,7 @@ def main() -> None:
                 db.execute(
                     text(
                         f"INSERT INTO t_fact_local_entry_station_flow_{grain} ({key},toll_station_id,event_count) "
-                        f"SELECT {period},s.toll_station_id,COUNT(DISTINCT m.event_key) FROM `{match_table}` m "
+                        f"SELECT {period},s.toll_station_id,COUNT(DISTINCT m.trade_id) FROM `{match_table}` m "
                         "JOIN t_toll_station s ON s.station_code=m.entry_station_code "
                         "JOIN t_local_entry_station l ON l.toll_station_id=s.toll_station_id AND l.enabled=1 "
                         f"GROUP BY {period},s.toll_station_id"

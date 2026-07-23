@@ -20,11 +20,12 @@ def start_sync(db, *, task_no: str, operation: str, server, start, end) -> tuple
 
 
 def latest_complete(db, server_code: str, start, end) -> bool:
-    return bool(db.execute(text(
-        "SELECT 1 FROM t_etl_sync_log WHERE server_code=:server AND window_start=:start "
-        "AND window_end=:end AND status IN ('SUCCESS','SKIPPED') AND check_status='COMPLETE' "
+    row = db.execute(text(
+        "SELECT check_status FROM t_etl_sync_log WHERE server_code=:server "
+        "AND window_start=:start AND window_end=:end AND status IN ('SUCCESS','SKIPPED') "
         "ORDER BY sync_log_id DESC LIMIT 1"
-    ), {"server": server_code, "start": start, "end": end}).scalar_one_or_none())
+    ), {"server": server_code, "start": start, "end": end}).scalar_one_or_none()
+    return row == "COMPLETE"
 
 
 def finish_sync(db, sync_id: str, *, status: str, check_status: str = "UNCHECKED", **values) -> None:

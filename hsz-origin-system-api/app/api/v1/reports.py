@@ -455,8 +455,8 @@ def media_vehicle_types(
             parameters[name] = code
         direction_where += f" AND {media_expression} IN ({','.join(placeholders)})"
     events = " UNION ALL ".join(
-        "SELECT m.event_key,m.event_time,m.object_no,m.vehicle_type_code,ods.media_type "
-        f"FROM `{match_table}` m JOIN `{ods_table}` ods ON ods.event_key=m.event_key "
+        "SELECT m.trade_id,m.event_time,m.object_no,m.vehicle_type_code,ods.media_type "
+        f"FROM `{match_table}` m JOIN `{ods_table}` ods ON ods.trade_id=m.trade_id "
         "WHERE m.event_time >= :start AND m.event_time < :end AND m.object_no = :direction_id "
         "AND ods.event_time >= :start AND ods.event_time < :end"
         for match_table, ods_table in pairs

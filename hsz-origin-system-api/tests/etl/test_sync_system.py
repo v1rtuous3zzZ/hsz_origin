@@ -7,9 +7,9 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
 from app.api.v1.etl import missing_windows, query_missing_windows
-from app.etl import cli, source_reader, sync_service, task_runner
+from app.etl import cli, job_queue, source_reader, sync_service, task_runner
 from app.etl.source_schema import source_table
-from app.etl.sync_log import start_sync
+from app.etl.sync_log import latest_complete, start_sync
 from app.etl.verifier import center_trade_ids, missing_trade_ids
 
 
@@ -40,7 +40,7 @@ def test_missing_center_month_means_all_source_ids_are_missing():
     assert center_trade_ids(db, {"a", "b"}, "202001") == set()
 
 
-def test_source_trade_ids_are_deduplicated_and_check_reads_only_three_fields(monkeypatch):
+def test_trade_ids_are_deduplicated_and_check_reads_only_trade_id(monkeypatch):
     connection = MagicMock()
     cursor = connection.cursor.return_value.__enter__.return_value
     cursor.fetchmany.side_effect = [[
@@ -155,6 +155,31 @@ def test_each_log_start_generates_a_new_sync_id():
     assert all("INSERT INTO t_etl_sync_log" in call.args[0].text for call in db.execute.call_args_list)
 
 
+def test_latest_complete_uses_latest_effective_result():
+    engine = create_engine("sqlite://")
+    with engine.begin() as connection:
+        connection.execute(text("""
+            CREATE TABLE t_etl_sync_log (
+                sync_log_id INTEGER PRIMARY KEY, server_code TEXT, window_start TEXT,
+                window_end TEXT, status TEXT, check_status TEXT
+            )
+        """))
+        connection.execute(text("""
+            INSERT INTO t_etl_sync_log VALUES
+            (1,'S1','2026-07-01 00:00','2026-07-01 02:00','SUCCESS','COMPLETE'),
+            (2,'S1','2026-07-01 00:00','2026-07-01 02:00','SUCCESS','MISSING')
+        """))
+    with Session(engine) as db:
+        assert latest_complete(db, "S1", "2026-07-01 00:00", "2026-07-01 02:00") is False
+    with engine.begin() as connection:
+        connection.execute(text("""
+            INSERT INTO t_etl_sync_log VALUES
+            (3,'S1','2026-07-01 00:00','2026-07-01 02:00','SKIPPED','COMPLETE')
+        """))
+    with Session(engine) as db:
+        assert latest_complete(db, "S1", "2026-07-01 00:00", "2026-07-01 02:00") is True
+
+
 def test_windows_never_cross_month_and_no_recursive_split():
     windows = list(task_runner.iter_windows(datetime(2026, 1, 31, 23),
                                             datetime(2026, 2, 1, 2), 120))
@@ -188,18 +213,83 @@ def test_backfill_rebuilds_a_month_once(monkeypatch):
         "status": "SUCCESS", "check_status": "COMPLETE"
     })
     rebuilt = []
-    monkeypatch.setattr(task_runner, "rebuild", lambda db, start, end, log: rebuilt.append(start.strftime("%Y%m")))
-    monkeypatch.setattr(task_runner, "ensure_month_tables", lambda *a: None)
+    monkeypatch.setattr(task_runner, "rebuild_window", lambda start, end, task: rebuilt.append(start.strftime("%Y%m")))
     monkeypatch.setattr(task_runner, "month_is_complete", lambda *a: True)
-
-    class Context:
-        def __enter__(self): return MagicMock()
-        def __exit__(self, *unused): return False
-    monkeypatch.setattr(task_runner, "SessionLocal", SimpleNamespace(begin=lambda: Context()))
     result = task_runner.run_range(datetime(2026, 6, 1), datetime(2026, 6, 1, 4),
                                    sleep_seconds=0)
     assert result["processed_windows"] == 2
     assert rebuilt == ["202606"]
+
+
+def test_single_server_backfill_does_not_rebuild_until_all_servers_complete(monkeypatch):
+    monkeypatch.setattr(task_runner, "server_codes", lambda code=None: ["S1"] if code else ["S1", "S2"])
+    monkeypatch.setattr(task_runner, "sync_window", lambda *a, **k: {
+        "status": "SUCCESS", "check_status": "COMPLETE"
+    })
+    monkeypatch.setattr(task_runner, "month_is_complete", lambda start, end, codes: codes == ["S1"])
+    rebuilt = []
+    monkeypatch.setattr(task_runner, "rebuild_window", lambda *args: rebuilt.append(args))
+    result = task_runner.run_range(datetime(2026, 6, 1), datetime(2026, 6, 1, 2),
+                                   server_code="S1", sleep_seconds=0)
+    assert result["processed_windows"] == 1
+    assert rebuilt == []
+
+
+def test_run_range_keeps_only_recent_100_results(monkeypatch):
+    monkeypatch.setattr(task_runner, "server_codes", lambda unused=None: ["S1"])
+    monkeypatch.setattr(task_runner, "sync_window", lambda code, start, *a, **k: {
+        "status": "SUCCESS", "check_status": "COMPLETE", "window": start.isoformat()
+    })
+    monkeypatch.setattr(task_runner, "month_is_complete", lambda *a: False)
+    result = task_runner.run_range(datetime(2026, 6, 1), datetime(2026, 6, 11),
+                                   sleep_seconds=0)
+    assert result["processed_windows"] == 120
+    assert len(result["recent_results"]) == 100
+
+
+def test_live_rebuilds_once_after_all_target_servers_complete(monkeypatch):
+    monkeypatch.setattr(task_runner, "server_codes", lambda unused=None: ["S1", "S2"])
+    monkeypatch.setattr(task_runner, "sync_window", lambda *a, **k: {
+        "status": "SUCCESS", "check_status": "COMPLETE"
+    })
+    rebuilt = []
+    monkeypatch.setattr(task_runner, "rebuild_window", lambda *args: rebuilt.append(args))
+    task_runner.run_range(datetime(2026, 7, 1), datetime(2026, 7, 1, 2),
+                          operation="LIVE", sleep_seconds=0)
+    assert len(rebuilt) == 1
+
+
+def test_check_never_rebuilds_facts(monkeypatch):
+    monkeypatch.setattr(task_runner, "server_codes", lambda unused=None: ["S1"])
+    monkeypatch.setattr(task_runner, "sync_window", lambda *a, **k: {
+        "status": "SUCCESS", "check_status": "COMPLETE"
+    })
+    rebuilt = MagicMock()
+    monkeypatch.setattr(task_runner, "rebuild_window", rebuilt)
+    task_runner.run_range(datetime(2026, 7, 1), datetime(2026, 7, 1, 2),
+                          operation="CHECK", sleep_seconds=0)
+    rebuilt.assert_not_called()
+
+
+def test_repair_rebuilds_once_for_task_range(monkeypatch):
+    monkeypatch.setattr(task_runner, "server_codes", lambda unused=None: ["S1", "S2"])
+    monkeypatch.setattr(task_runner, "sync_window", lambda *a, **k: {
+        "status": "SUCCESS", "check_status": "COMPLETE"
+    })
+    rebuilt = []
+    monkeypatch.setattr(task_runner, "rebuild_window", lambda *args: rebuilt.append(args))
+    task_runner.run_range(datetime(2026, 7, 1), datetime(2026, 7, 1, 4),
+                          operation="REPAIR", sleep_seconds=0)
+    assert len(rebuilt) == 1
+
+
+def test_worker_start_recovers_running_jobs(monkeypatch):
+    recovered = []
+    monkeypatch.setattr(job_queue, "recover_running_jobs", lambda: recovered.append(True) or 1)
+    monkeypatch.setattr(job_queue, "claim_next_job", lambda: None)
+    result = job_queue.run_worker(once=True)
+    assert result["recovered_count"] == 1
+    assert recovered == [True]
 
 
 def test_missing_windows_query_uses_only_latest_effective_result():
@@ -246,7 +336,7 @@ def test_repair_by_sync_id_forces_new_repair_execution(monkeypatch):
     monkeypatch.setattr(task_runner, "sync_window", called)
     assert task_runner.repair_by_sync_id("old") == {"sync_id": "new"}
     called.assert_called_once_with("S1", row["window_start"], row["window_end"],
-                                   "REPAIR", True, rebuild_facts=True)
+                                   "REPAIR", True)
 
 
 def test_live_once_uses_configured_window_and_safety_delay(monkeypatch, capsys):

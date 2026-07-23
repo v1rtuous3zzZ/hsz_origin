@@ -1,5 +1,6 @@
 import time
 import uuid
+from collections import deque
 from datetime import datetime, timedelta
 from datetime import time as day_time
 from zoneinfo import ZoneInfo
@@ -80,6 +81,23 @@ def month_is_complete(month_start: datetime, month_end: datetime, codes: list[st
     return int(complete) == expected
 
 
+def latest_lineage_id(task_no: str, start: datetime, end: datetime) -> int | None:
+    with SessionLocal() as db:
+        return db.execute(text(
+            "SELECT MAX(sync_log_id) FROM t_etl_sync_log "
+            "WHERE task_no=:task AND window_start>=:start AND window_end<=:end"
+        ), {"task": task_no, "start": start, "end": end}).scalar_one_or_none()
+
+
+def rebuild_window(start: datetime, end: datetime, task_no: str) -> None:
+    lineage_id = latest_lineage_id(task_no, start, end)
+    if lineage_id is None:
+        return
+    with SessionLocal.begin() as db:
+        ensure_month_tables(db, start.strftime("%Y%m"))
+        rebuild(db, start, end, lineage_id)
+
+
 def run_range(start: datetime, end: datetime, *, operation: str = "BACKFILL",
               server_code: str | None = None, window_minutes: int = 120,
               sleep_seconds: int = 5, force: bool = False,
@@ -89,60 +107,61 @@ def run_range(start: datetime, end: datetime, *, operation: str = "BACKFILL",
     windows = list(iter_windows(start, end, window_minutes))
     codes = server_codes(server_code)
     total = len(windows) * len(codes)
-    results, failed, missing, complete = [], 0, 0, 0
+    recent_results = deque(maxlen=100)
+    processed, failed, missing, complete = 0, 0, 0, 0
     changed_months: set[str] = set()
     incomplete_months: set[str] = set()
+    all_codes = server_codes(None)
     for window_start, window_end in windows:
         window_failed = False
+        window_missing = False
         for code in codes:
             result = sync_window(code, window_start, window_end, operation, force,
-                                 task_no=task_no, source_mode=source_mode,
-                                 rebuild_facts=operation in {"LIVE", "REPAIR"})
-            results.append(result)
+                                 task_no=task_no, source_mode=source_mode)
+            recent_results.append(result)
+            processed += 1
             if result["status"] == "FAILED":
                 failed += 1
                 window_failed = True
             elif result.get("check_status") == "MISSING":
                 missing += 1
+                window_missing = True
                 incomplete_months.add(window_start.strftime("%Y%m"))
             else:
                 complete += 1
                 if operation == "BACKFILL" and result["status"] == "SUCCESS":
                     changed_months.add(window_start.strftime("%Y%m"))
             if progress_callback:
-                progress_callback({"total_windows": total, "processed_windows": len(results),
+                progress_callback({"total_windows": total, "processed_windows": processed,
                                    "complete_windows": complete, "missing_windows": missing,
                                    "failed_windows": failed})
             if window_failed and stop_on_error:
                 break
-            if len(results) < total and sleep_seconds:
+            if processed < total and sleep_seconds:
                 time.sleep(sleep_seconds)
+        if operation == "LIVE" and not window_failed and not window_missing:
+            rebuild_window(window_start, window_end, task_no)
         if operation == "BACKFILL":
             if window_failed:
                 incomplete_months.add(window_start.strftime("%Y%m"))
         if window_failed and stop_on_error:
             break
+    if operation == "REPAIR" and failed == 0 and missing == 0:
+        rebuild_window(start, end, task_no)
     rebuilt = []
     if operation == "BACKFILL" and failed == 0:
         for month in sorted(changed_months - incomplete_months):
             month_start = datetime.strptime(month, "%Y%m")
             month_end = next_month(month_start)
-            if not month_is_complete(month_start, month_end, codes):
+            if not month_is_complete(month_start, month_end, all_codes):
                 continue
-            rebuild_start = month_start
-            with SessionLocal.begin() as db:
-                ensure_month_tables(db, month)
-                lineage_id = db.execute(text(
-                    "SELECT MAX(sync_log_id) FROM t_etl_sync_log "
-                    "WHERE task_no=:task AND window_start>=:start AND window_end<=:end"
-                ), {"task": task_no, "start": rebuild_start, "end": month_end}).scalar_one()
-                rebuild(db, rebuild_start, month_end, lineage_id)
+            rebuild_window(month_start, month_end, task_no)
             rebuilt.append(month)
     return {"task_no": task_no, "status": "SUCCESS" if failed == 0 else "PARTIAL",
-            "total_windows": total, "processed_windows": len(results),
+            "total_windows": total, "processed_windows": processed,
             "complete_windows": complete, "missing_windows": missing,
             "failed_windows": failed, "rebuilt_months": rebuilt,
-            "recent_results": results[-100:]}
+            "recent_results": list(recent_results)}
 
 
 def run_nightly_check(*, now: datetime | None = None, days=(1, 2),
@@ -166,4 +185,4 @@ def repair_by_sync_id(sync_id: str) -> dict:
     if not row:
         raise ValueError("同步日志不存在")
     return sync_window(row["server_code"], row["window_start"], row["window_end"],
-                       "REPAIR", True, rebuild_facts=True)
+                       "REPAIR", True)

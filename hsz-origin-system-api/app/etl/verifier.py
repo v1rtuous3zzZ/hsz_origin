@@ -20,8 +20,8 @@ def center_trade_ids(db, source_ids: set[str], month: str, batch_size: int = 200
     if not exists:
         return set()
     statement = text(
-        f"SELECT source_trade_id FROM `t_ods_event_{month}` "
-        "WHERE source_trade_id IN :trade_ids"
+        f"SELECT trade_id FROM `t_ods_event_{month}` "
+        "WHERE trade_id IN :trade_ids"
     ).bindparams(bindparam("trade_ids", expanding=True))
     found: set[str] = set()
     for values in chunked(list(source_ids), batch_size):

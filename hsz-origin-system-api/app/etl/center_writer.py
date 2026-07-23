@@ -23,7 +23,7 @@ def write_snapshot(db, events, rules, sync_log_id: int, batch_size: int) -> dict
     started = time.perf_counter()
     month = events[0].event_time.strftime("%Y%m")
     ensure_month_tables(db, month)
-    trade_ids = {event.source_trade_id for event in events}
+    trade_ids = {event.trade_id for event in events}
     existing = center_trade_ids(db, trade_ids, month, batch_size)
     write_events(db, events, sync_log_id, batch_size)
     matches = []

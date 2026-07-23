@@ -114,7 +114,7 @@ def _local_entry_flow(db, m, ha, hb, da, dbb, month, month_end, batch):
         db.execute(
             text(
                 f"INSERT INTO {table} ({key},event_count,last_batch_id) "
-                f"SELECT {bucket},COUNT(DISTINCT m.event_key),:batch FROM `{m}` m "
+                f"SELECT {bucket},COUNT(DISTINCT m.trade_id),:batch FROM `{m}` m "
                 "JOIN t_toll_station s ON s.station_code=m.entry_station_code "
                 "JOIN t_local_entry_station l ON l.toll_station_id=s.toll_station_id AND l.enabled=1 "
                 f"WHERE {where} GROUP BY {bucket}"
@@ -160,7 +160,7 @@ def _local_entry_station_flow(db, m, ha, hb, da, dbb, month, month_end, batch):
         db.execute(
             text(
                 f"INSERT INTO {table} ({key},toll_station_id,event_count,last_batch_id) "
-                f"SELECT {bucket},s.toll_station_id,COUNT(DISTINCT m.event_key),:batch FROM `{m}` m "
+                f"SELECT {bucket},s.toll_station_id,COUNT(DISTINCT m.trade_id),:batch FROM `{m}` m "
                 "JOIN t_toll_station s ON s.station_code=m.entry_station_code "
                 "JOIN t_local_entry_station l ON l.toll_station_id=s.toll_station_id AND l.enabled=1 "
                 f"WHERE {where} GROUP BY {bucket},s.toll_station_id"

@@ -8,10 +8,9 @@ from app.etl.models import Event, Rule
 def test_write_matches_uses_one_bulk_execute() -> None:
     db = Mock()
     event = Event(
-        event_key=b"key",
+        trade_id="trade",
         source_server_id=1,
         source_table_name="source",
-        source_trade_id="trade",
         event_time=datetime(2026, 7, 21, 10),
         entry_time=None,
         vehicle_plate_no=None,
@@ -37,3 +36,6 @@ def test_write_matches_uses_one_bulk_execute() -> None:
 
     db.execute.assert_called_once()
     assert len(db.execute.call_args.args[1]) == 2
+    sql = str(db.execute.call_args.args[0])
+    assert "trade_id" in sql
+    assert "event" + "_key" not in sql
