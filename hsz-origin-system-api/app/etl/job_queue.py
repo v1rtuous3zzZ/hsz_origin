@@ -28,6 +28,8 @@ class ManualSyncJob:
     window_end: datetime
     window_minutes: int
     sleep_seconds: int
+    source_batch_size: int
+    max_workers: int
     resume: bool
     continue_on_error: bool
     rebuild_facts: bool
@@ -46,7 +48,9 @@ def ensure_job_table(db: Session) -> None:
                 window_start DATETIME(3) NOT NULL COMMENT '同步区间开始时间',
                 window_end DATETIME(3) NOT NULL COMMENT '同步区间结束时间',
                 window_minutes INT NOT NULL DEFAULT 120 COMMENT '单个同步窗口分钟数',
-                sleep_seconds INT NOT NULL DEFAULT 2 COMMENT '窗口间休眠秒数',
+                sleep_seconds INT NOT NULL DEFAULT 10 COMMENT '窗口间休眠秒数',
+                source_batch_size INT NOT NULL DEFAULT 2000 COMMENT '门架游标单批读取行数',
+                max_workers INT NOT NULL DEFAULT 1 COMMENT '不同物理服务器最大并发读取数',
                 resume_enabled TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否跳过已有成功源和窗口',
                 continue_on_error TINYINT(1) NOT NULL DEFAULT 1 COMMENT '单窗口失败后是否继续',
                 rebuild_facts TINYINT(1) NOT NULL DEFAULT 0 COMMENT '明细完成后是否按月重建事实',
@@ -69,6 +73,28 @@ def ensure_job_table(db: Session) -> None:
             """
         )
     )
+    columns = set(
+        db.execute(
+            text(
+                "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='t_etl_manual_job'"
+            )
+        ).scalars()
+    )
+    if "source_batch_size" not in columns:
+        db.execute(
+            text(
+                "ALTER TABLE t_etl_manual_job ADD COLUMN source_batch_size INT NOT NULL "
+                "DEFAULT 2000 COMMENT '门架游标单批读取行数' AFTER sleep_seconds"
+            )
+        )
+    if "max_workers" not in columns:
+        db.execute(
+            text(
+                "ALTER TABLE t_etl_manual_job ADD COLUMN max_workers INT NOT NULL "
+                "DEFAULT 1 COMMENT '不同物理服务器最大并发读取数' AFTER source_batch_size"
+            )
+        )
 
 
 def enqueue_manual_sync(
@@ -78,6 +104,8 @@ def enqueue_manual_sync(
     end: datetime,
     window_minutes: int,
     sleep_seconds: int,
+    source_batch_size: int,
+    max_workers: int,
     resume: bool,
     continue_on_error: bool,
     rebuild_facts: bool,
@@ -88,9 +116,9 @@ def enqueue_manual_sync(
     result = db.execute(
         text(
             "INSERT INTO t_etl_manual_job "
-            "(job_no,window_start,window_end,window_minutes,sleep_seconds,"
+            "(job_no,window_start,window_end,window_minutes,sleep_seconds,source_batch_size,max_workers,"
             "resume_enabled,continue_on_error,rebuild_facts,server_code) "
-            "VALUES (:job_no,:start,:end,:window_minutes,:sleep_seconds,"
+            "VALUES (:job_no,:start,:end,:window_minutes,:sleep_seconds,:source_batch_size,:max_workers,"
             ":resume,:continue_on_error,:rebuild_facts,:server_code)"
         ),
         {
@@ -99,6 +127,8 @@ def enqueue_manual_sync(
             "end": end,
             "window_minutes": window_minutes,
             "sleep_seconds": sleep_seconds,
+            "source_batch_size": source_batch_size,
+            "max_workers": max_workers,
             "resume": int(resume),
             "continue_on_error": int(continue_on_error),
             "rebuild_facts": int(rebuild_facts),
@@ -120,7 +150,7 @@ def get_manual_job(db: Session, job_id: int) -> dict | None:
         db.execute(
             text(
                 "SELECT job_id,job_no,status,window_start,window_end,window_minutes,"
-                "sleep_seconds,resume_enabled,continue_on_error,rebuild_facts,server_code,"
+                "sleep_seconds,source_batch_size,max_workers,resume_enabled,continue_on_error,rebuild_facts,server_code,"
                 "created_at,started_at,heartbeat_at,finished_at,worker_host,worker_pid,"
                 "progress_json,result_json,error_summary "
                 "FROM t_etl_manual_job WHERE job_id=:job_id"
@@ -165,7 +195,7 @@ def claim_next_job() -> ManualSyncJob | None:
         row = (
             db.execute(
                 text(
-                    "SELECT job_id,job_no,window_start,window_end,window_minutes,sleep_seconds,"
+                    "SELECT job_id,job_no,window_start,window_end,window_minutes,sleep_seconds,source_batch_size,max_workers,"
                     "resume_enabled,continue_on_error,rebuild_facts,server_code "
                     "FROM t_etl_manual_job WHERE status='PENDING' "
                     "ORDER BY job_id LIMIT 1 FOR UPDATE SKIP LOCKED"
@@ -191,6 +221,8 @@ def claim_next_job() -> ManualSyncJob | None:
         window_end=row["window_end"],
         window_minutes=int(row["window_minutes"]),
         sleep_seconds=int(row["sleep_seconds"]),
+        source_batch_size=int(row["source_batch_size"]),
+        max_workers=int(row["max_workers"]),
         resume=bool(row["resume_enabled"]),
         continue_on_error=bool(row["continue_on_error"]),
         rebuild_facts=bool(row["rebuild_facts"]),
@@ -237,6 +269,8 @@ def execute_job(job: ManualSyncJob) -> dict:
             server_code=job.server_code,
             window_minutes=job.window_minutes,
             sleep_seconds=job.sleep_seconds,
+            source_batch_size=job.source_batch_size,
+            max_workers=job.max_workers,
             resume=job.resume,
             continue_on_error=job.continue_on_error,
             rebuild_facts=job.rebuild_facts,

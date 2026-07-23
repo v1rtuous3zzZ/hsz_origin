@@ -75,7 +75,13 @@ def build_parser() -> argparse.ArgumentParser:
     backfill.add_argument(
         "--window-minutes", type=int, default=settings.history_window_minutes
     )
-    backfill.add_argument("--sleep-seconds", type=int)
+    backfill.set_defaults(
+        batch_size=settings.history_source_batch_size,
+        max_workers=settings.history_max_workers,
+    )
+    backfill.add_argument(
+        "--sleep-seconds", type=int, default=settings.history_sleep_seconds
+    )
     backfill.add_argument("--no-resume", action="store_true", help="不跳过已成功窗口")
     backfill.add_argument("--stop-on-error", action="store_true")
     backfill.add_argument("--skip-fact-rebuild", action="store_true")
@@ -144,6 +150,7 @@ def main() -> None:
                 job_type="INCREMENTAL",
                 source_batch_size=args.batch_size,
                 max_workers=args.max_workers,
+                skip_successful_sources=not args.force,
             )
         else:
             result = run_live_once(

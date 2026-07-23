@@ -14,11 +14,15 @@ def _env_bool(name: str, default: bool) -> bool:
 class EtlSettings:
     batch_size: int = int(os.getenv("HSZ_ETL_BATCH_SIZE", "2000"))
     max_workers: int = int(os.getenv("HSZ_ETL_MAX_WORKERS", "4"))
+    live_max_workers: int = int(os.getenv("HSZ_ETL_LIVE_MAX_WORKERS", "4"))
     source_retries: int = int(os.getenv("HSZ_ETL_SOURCE_RETRIES", "2"))
     source_lock_timeout_seconds: int = int(
         os.getenv("HSZ_ETL_SOURCE_LOCK_TIMEOUT_SECONDS", "300")
     )
     serialize_source_reads: bool = _env_bool("HSZ_ETL_SERIALIZE_SOURCE_READS", True)
+    source_index_live_policy: str = os.getenv(
+        "HSZ_ETL_SOURCE_INDEX_LIVE_POLICY", "WARN"
+    ).upper()
 
     center_retries: int = int(os.getenv("HSZ_ETL_CENTER_RETRIES", "2"))
     center_write_batch_size: int = int(
@@ -32,9 +36,13 @@ class EtlSettings:
     )
 
     history_window_minutes: int = int(
-        os.getenv("HSZ_ETL_HISTORY_WINDOW_MINUTES", "360")
+        os.getenv("HSZ_ETL_HISTORY_WINDOW_MINUTES", "120")
     )
-    history_sleep_seconds: int = int(os.getenv("HSZ_ETL_HISTORY_SLEEP_SECONDS", "0"))
+    history_max_workers: int = int(os.getenv("HSZ_ETL_HISTORY_MAX_WORKERS", "1"))
+    history_source_batch_size: int = int(
+        os.getenv("HSZ_ETL_HISTORY_SOURCE_BATCH_SIZE", "2000")
+    )
+    history_sleep_seconds: int = int(os.getenv("HSZ_ETL_HISTORY_SLEEP_SECONDS", "10"))
 
     manual_job_poll_seconds: int = int(os.getenv("HSZ_ETL_MANUAL_JOB_POLL_SECONDS", "5"))
     manual_job_stale_minutes: int = int(

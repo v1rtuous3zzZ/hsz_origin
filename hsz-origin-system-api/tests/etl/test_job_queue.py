@@ -12,6 +12,8 @@ def make_job() -> ManualSyncJob:
         window_end=datetime(2026, 7, 1, 4),
         window_minutes=120,
         sleep_seconds=0,
+        source_batch_size=2000,
+        max_workers=1,
         resume=True,
         continue_on_error=True,
         rebuild_facts=False,
@@ -25,7 +27,7 @@ def test_execute_job_updates_progress_and_finishes_successfully() -> None:
         return {"status": "SUCCESS", "window_count": 2}
 
     with (
-        patch("app.etl.job_queue.sync_range", side_effect=run),
+        patch("app.etl.job_queue.sync_range", side_effect=run) as sync,
         patch("app.etl.job_queue.update_job_progress") as progress,
         patch("app.etl.job_queue.finish_job") as finish,
     ):
@@ -33,6 +35,8 @@ def test_execute_job_updates_progress_and_finishes_successfully() -> None:
 
     assert result["status"] == "SUCCESS"
     progress.assert_called_once_with(1, {"processed_count": 1})
+    assert sync.call_args.kwargs["source_batch_size"] == 2000
+    assert sync.call_args.kwargs["max_workers"] == 1
     finish.assert_called_once_with(
         1,
         "SUCCESS",

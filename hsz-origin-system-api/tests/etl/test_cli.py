@@ -1,7 +1,7 @@
 from app.etl.cli import build_parser
 
 
-def test_backfill_uses_six_hour_history_windows():
+def test_backfill_uses_low_impact_history_defaults():
     args = build_parser().parse_args(
         [
             "backfill",
@@ -12,5 +12,7 @@ def test_backfill_uses_six_hour_history_windows():
         ]
     )
 
-    assert args.window_minutes == 360
-    assert args.sleep_seconds is None
+    assert args.window_minutes == 120
+    assert args.sleep_seconds == 10
+    assert args.batch_size == 2000
+    assert args.max_workers == 1

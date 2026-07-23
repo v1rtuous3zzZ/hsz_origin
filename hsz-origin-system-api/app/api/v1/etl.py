@@ -7,18 +7,24 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.db.dependencies import get_db
+from app.etl.config import EtlSettings
 from app.etl.job_queue import enqueue_manual_sync, get_manual_job
 from app.etl.orchestrator import iter_windows
 
 router = APIRouter(prefix="/etl", tags=["etl"])
+settings = EtlSettings()
 
 
 class ManualSyncRequest(BaseModel):
     start: datetime
     end: datetime
     rebuild_facts: bool = False
-    window_minutes: int = Field(default=120, ge=10, le=1440)
-    sleep_seconds: int = Field(default=2, ge=0, le=60)
+    window_minutes: int = Field(default=settings.history_window_minutes, ge=10, le=1440)
+    sleep_seconds: int = Field(default=settings.history_sleep_seconds, ge=0, le=60)
+    source_batch_size: int = Field(
+        default=settings.history_source_batch_size, ge=100, le=10000
+    )
+    max_workers: int = Field(default=settings.history_max_workers, ge=1, le=16)
     resume: bool = True
     continue_on_error: bool = True
     server_code: str | None = None
@@ -57,6 +63,8 @@ def _enqueue(db: Session, payload: ManualSyncRequest) -> dict:
         end=payload.end,
         window_minutes=payload.window_minutes,
         sleep_seconds=payload.sleep_seconds,
+        source_batch_size=payload.source_batch_size,
+        max_workers=payload.max_workers,
         resume=payload.resume,
         continue_on_error=payload.continue_on_error,
         rebuild_facts=payload.rebuild_facts,
