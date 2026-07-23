@@ -5,9 +5,10 @@
 
 ## 数据库迁移
 
-在中心库备份确认后执行 `migrations/20260723_simplify_etl.sql`。脚本会删除旧批次、
-源批次、checkpoint 和 quality 表，创建 `t_etl_sync_log`、精简任务表，并为所有
-ODS 月表的 `trade_id` 增加唯一约束。严禁在门架源库执行该脚本。
+在中心库备份确认后执行 `migrations/20260723_simplify_etl.sql`。脚本会删除重建 ODS、
+命中和同步日志，清空 15 张 ETL 派生事实表的数据并保留其结构；历史回填完成后重新
+生成事实数据。配置、字典、门架关系、规则等基础数据保留。ODS 以 `trade_id` 主键保证
+唯一。严禁在门架源库执行该脚本。
 
 ## 命令
 
@@ -27,8 +28,11 @@ python -m app.etl.cli worker
 调试时可显式指定 `--source-mode realtime|history`。不会双表扫描或自动拆窗。
 
 历史初始化建议逐月提交。默认窗口 120 分钟、流式批量 2000、窗口间休眠 5 秒、
-单 worker。BACKFILL 在同月全部窗口完成后只重建一次事实；LIVE 与 REPAIR 重建当前
-窗口事实；CHECK 不写业务数据。
+单 worker。BACKFILL 在整月全部可采集服务器窗口 COMPLETE 后只重建一次事实；LIVE 重建当前窗口；REPAIR
+整个任务无失败和缺失后按受影响自然月分别重建；CHECK 不写业务数据也不重建事实。
+
+worker 启动时先将遗留 RUNNING 同步日志标记为 `WorkerRestart` 失败，再把 RUNNING 手工
+任务恢复为 PENDING；任务重跑会生成新的唯一同步日志。
 
 夜间 04:30 运行 `nightly-check`，默认只检查 D-1 与 D-2，各拆 12 个两小时窗口，
 不自动补数。缺失仅表示 `source TradeId - center TradeId` 非空。

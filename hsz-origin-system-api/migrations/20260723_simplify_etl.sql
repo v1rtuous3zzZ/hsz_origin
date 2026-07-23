@@ -1,5 +1,6 @@
 -- ETL TradeId 主键简化迁移。仅允许在中心库 hsz_origin 执行，严禁在门架源库执行。
--- 破坏性操作范围：旧 ETL 日志/任务表、ODS 模板/月表和命中模板/月表会被删除重建。
+-- 破坏性操作范围：ODS、命中和同步日志删除重建；派生事实数据清空后由历史回填重新生成。
+-- 配置、字典、门架关系和规则等基础数据保留，事实表结构保留。
 -- 原因：TradeId 已确认为全渠道唯一，旧 event_key/source_trade_id 双标识结构不再保留。
 
 DELIMITER $$
@@ -22,6 +23,22 @@ DROP PROCEDURE assert_center_database_for_trade_id_migration$$
 DELIMITER ;
 
 DROP PROCEDURE IF EXISTS sp_create_event_month_tables;
+
+DELETE FROM t_fact_flow_hourly;
+DELETE FROM t_fact_flow_daily;
+DELETE FROM t_fact_flow_monthly;
+DELETE FROM t_fact_local_entry_flow_hourly;
+DELETE FROM t_fact_local_entry_flow_daily;
+DELETE FROM t_fact_local_entry_flow_monthly;
+DELETE FROM t_fact_local_entry_station_flow_hourly;
+DELETE FROM t_fact_local_entry_station_flow_daily;
+DELETE FROM t_fact_local_entry_station_flow_monthly;
+DELETE FROM t_fact_source_station_hourly;
+DELETE FROM t_fact_source_station_daily;
+DELETE FROM t_fact_source_station_monthly;
+DELETE FROM t_fact_vehicle_type_hourly;
+DELETE FROM t_fact_vehicle_type_daily;
+DELETE FROM t_fact_vehicle_type_monthly;
 
 DROP TABLE IF EXISTS t_etl_checkpoint;
 DROP TABLE IF EXISTS t_etl_batch_source;
@@ -153,7 +170,6 @@ CREATE TABLE t_ods_event_template (
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '创建时间',
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '更新时间',
     PRIMARY KEY (trade_id),
-    UNIQUE KEY uk_ods_trade_id (trade_id),
     KEY idx_ods_event_time (event_time),
     KEY idx_ods_source (source_server_id,source_table_name,event_time),
     KEY idx_ods_current_gantry (current_gantry_hex,event_time)
@@ -176,8 +192,7 @@ CREATE TABLE t_event_object_match_template (
     PRIMARY KEY (match_id),
     UNIQUE KEY uk_event_object_match (trade_id,object_no),
     KEY idx_match_event_time (event_time),
-    KEY idx_match_object_time (object_no,event_time),
-    KEY idx_match_trade_id (trade_id)
+    KEY idx_match_object_time (object_no,event_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='交易事件统计对象命中模板表';
 
 DELIMITER $$

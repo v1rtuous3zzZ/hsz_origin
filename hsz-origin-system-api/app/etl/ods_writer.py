@@ -15,7 +15,7 @@ def write_events(
     batch_id: int,
     batch_size: int = 5000,
 ):
-    """分批幂等写入中心 ODS；uk_ods_trade_id 保证重复窗口安全。"""
+    """分批幂等写入中心 ODS；trade_id 主键保证重复窗口安全。"""
     if not events:
         return
     table = f"t_ods_event_{events[0].event_time:%Y%m}"

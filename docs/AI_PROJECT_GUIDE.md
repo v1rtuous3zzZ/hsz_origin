@@ -28,10 +28,10 @@ POST 接口只向中心库任务队列写入记录并返回 HTTP 202。禁止在
 | 用户 | `t_user`、`t_user_session`、`t_login_audit` |
 | 源与规则 | `t_source_server`、`t_source_db_config`、`t_physical_gantry`、`t_physical_logical_gantry_rel`、`t_stat_rule` |
 | ODS/命中 | `t_ods_event_template`、`t_ods_event_YYYYMM`、`t_event_object_match_template`、`t_event_object_match_YYYYMM` |
-| 事实 | `t_fact_flow_*`、`t_fact_local_entry_flow_*`、`t_fact_vehicle_type_*`、`t_fact_source_station_*` |
+| 事实 | `t_fact_flow_*`、`t_fact_local_entry_flow_*`、`t_fact_local_entry_station_flow_*`、`t_fact_vehicle_type_*`、`t_fact_source_station_*` |
 | ETL | `t_etl_sync_log`、`t_etl_manual_job` |
 
-`trade_id` 即门架原始 `TradeId`，全渠道唯一。各 ODS 月表必须有该字段的唯一约束。迁移脚本是 `hsz-origin-system-api/migrations/20260723_simplify_etl.sql`，不得只手工改库。
+`trade_id` 即门架原始 `TradeId`，全渠道唯一。各 ODS 月表以该字段为主键。迁移脚本是 `hsz-origin-system-api/migrations/20260723_simplify_etl.sql`：ODS、命中和同步日志删除重建，15 张 ETL 派生事实表清空数据并保留结构，历史回填后重新生成；配置、字典、门架关系和规则等基础数据保留。不得只手工改库。
 
 ## 同步规则
 
@@ -43,7 +43,8 @@ POST 接口只向中心库任务队列写入记录并返回 HTTP 202。禁止在
 - 源端流式 `fetchmany`，按 TradeId 去重，读完立即关闭连接。仅瞬时网络错误在初次失败后最多重试两次，间隔 2 秒、5 秒；表、字段、配置和索引问题不重试。
 - CHECK 投影只选择 TradeId，GantryId 与 TransTime 仅用于 WHERE，不读取业务字段。完整性唯一算法是源端 TradeId 集合减中心 trade_id 集合；中心额外数据不算缺失，源端零行是 COMPLETE。
 - 非 CHECK 在关闭门架连接后标准化并写 ODS 与规则命中。中心重试只复用内存快照，禁止重新访问门架。
-- 事实重建统一由 task runner 执行：LIVE 同一两小时窗口全部目标服务器 COMPLETE 后重建一次；REPAIR 一个任务全部 COMPLETE 后重建一次；BACKFILL 仅在最新日志证明整自然月、全部启用可采集服务器窗口均 COMPLETE 后重建该月一次；CHECK 不重建事实。
+- 事实重建统一由 task runner 执行：LIVE 同一两小时窗口全部目标服务器 COMPLETE 后重建一次；REPAIR 整个任务无 FAILED 和 MISSING 后按受影响自然月分别重建；BACKFILL 仅在最新日志证明整自然月、全部启用可采集服务器窗口均 COMPLETE 后重建该月一次；CHECK 不重建事实。
+- 单 worker 启动时先把遗留 RUNNING 同步日志终止为 `FAILED/UNCHECKED`（`WorkerRestart`），再将 RUNNING 手工任务恢复为 PENDING；重跑窗口始终新增唯一同步日志。
 - `missing-windows` 以服务器、开始和结束时间分组，只取最新有效日志；新 COMPLETE 会覆盖旧 MISSING 的页面状态，但不会修改旧日志。
 
 默认配置：

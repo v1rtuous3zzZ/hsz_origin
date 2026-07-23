@@ -271,16 +271,39 @@ def test_check_never_rebuilds_facts(monkeypatch):
     rebuilt.assert_not_called()
 
 
-def test_repair_rebuilds_once_for_task_range(monkeypatch):
-    monkeypatch.setattr(task_runner, "server_codes", lambda unused=None: ["S1", "S2"])
+def test_cross_month_repair_rebuilds_each_affected_month(monkeypatch):
+    monkeypatch.setattr(task_runner, "server_codes", lambda unused=None: ["S1"])
     monkeypatch.setattr(task_runner, "sync_window", lambda *a, **k: {
         "status": "SUCCESS", "check_status": "COMPLETE"
     })
     rebuilt = []
-    monkeypatch.setattr(task_runner, "rebuild_window", lambda *args: rebuilt.append(args))
-    task_runner.run_range(datetime(2026, 7, 1), datetime(2026, 7, 1, 4),
+    monkeypatch.setattr(
+        task_runner, "rebuild_window",
+        lambda start, end, task: rebuilt.append((start, end, task)),
+    )
+    result = task_runner.run_range(
+        datetime(2026, 6, 30, 22), datetime(2026, 7, 1, 2),
+        operation="REPAIR", sleep_seconds=0, task_no="REPAIR-CROSS-MONTH",
+    )
+    assert result["status"] == "SUCCESS"
+    assert result["processed_windows"] == 2
+    assert result["rebuilt_months"] == ["202606", "202607"]
+    assert rebuilt == [
+        (datetime(2026, 6, 30, 22), datetime(2026, 7, 1), "REPAIR-CROSS-MONTH"),
+        (datetime(2026, 7, 1), datetime(2026, 7, 1, 2), "REPAIR-CROSS-MONTH"),
+    ]
+
+
+def test_repair_with_missing_window_does_not_rebuild(monkeypatch):
+    monkeypatch.setattr(task_runner, "server_codes", lambda unused=None: ["S1"])
+    monkeypatch.setattr(task_runner, "sync_window", lambda *a, **k: {
+        "status": "SUCCESS", "check_status": "MISSING"
+    })
+    rebuilt = MagicMock()
+    monkeypatch.setattr(task_runner, "rebuild_window", rebuilt)
+    task_runner.run_range(datetime(2026, 6, 30, 22), datetime(2026, 7, 1, 2),
                           operation="REPAIR", sleep_seconds=0)
-    assert len(rebuilt) == 1
+    rebuilt.assert_not_called()
 
 
 def test_worker_start_recovers_running_jobs(monkeypatch):
@@ -290,6 +313,41 @@ def test_worker_start_recovers_running_jobs(monkeypatch):
     result = job_queue.run_worker(once=True)
     assert result["recovered_count"] == 1
     assert recovered == [True]
+
+
+def test_worker_recovery_fails_running_logs_before_requeueing_jobs(monkeypatch):
+    db = MagicMock()
+    db.execute.side_effect = [MagicMock(rowcount=1), MagicMock(rowcount=1)]
+
+    class Context:
+        def __enter__(self): return db
+        def __exit__(self, *unused): return False
+
+    monkeypatch.setattr(job_queue, "SessionLocal", SimpleNamespace(begin=lambda: Context()))
+    assert job_queue.recover_running_jobs() == 1
+    statements = [call.args[0].text for call in db.execute.call_args_list]
+    assert "UPDATE t_etl_sync_log" in statements[0]
+    assert "error_type='WorkerRestart'" in statements[0]
+    assert "worker重启，窗口执行中断" in statements[0]
+    assert "WHERE status='RUNNING'" in statements[0]
+    assert "UPDATE t_etl_manual_job" in statements[1]
+    assert "status='PENDING'" in statements[1]
+
+    resumed_db = MagicMock()
+    resumed_db.execute.return_value.lastrowid = 2
+    first = start_sync(
+        resumed_db, task_no="RECOVERED", operation="REPAIR", server=server(),
+        start=datetime(2026, 7, 1), end=datetime(2026, 7, 1, 2),
+    )
+    second = start_sync(
+        resumed_db, task_no="RECOVERED", operation="REPAIR", server=server(),
+        start=datetime(2026, 7, 1), end=datetime(2026, 7, 1, 2),
+    )
+    assert first[1] != second[1]
+    assert all(
+        "INSERT INTO t_etl_sync_log" in call.args[0].text
+        for call in resumed_db.execute.call_args_list
+    )
 
 
 def test_missing_windows_query_uses_only_latest_effective_result():

@@ -83,6 +83,11 @@ def claim_next_job() -> EtlJob | None:
 
 def recover_running_jobs() -> int:
     with SessionLocal.begin() as db:
+        db.execute(text(
+            "UPDATE t_etl_sync_log SET status='FAILED',check_status='UNCHECKED',"
+            "finished_at=NOW(3),error_type='WorkerRestart',"
+            "error_message='worker重启，窗口执行中断' WHERE status='RUNNING'"
+        ))
         result = db.execute(text(
             "UPDATE t_etl_manual_job SET status='PENDING',started_at=NULL,"
             "finished_at=NULL,error_message='worker 重启，任务重新入队' "

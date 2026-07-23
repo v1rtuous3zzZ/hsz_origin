@@ -35,6 +35,14 @@ def iter_windows(start: datetime, end: datetime, minutes: int = 120):
         current = window_end
 
 
+def iter_month_ranges(start: datetime, end: datetime):
+    current = start
+    while current < end:
+        month_end = min(next_month(current), end)
+        yield current, month_end
+        current = month_end
+
+
 def aligned_live_window(now: datetime | None = None, minutes: int = 120,
                         safety_delay: timedelta = timedelta(seconds=120)):
     effective = (now or shanghai_now()) - safety_delay
@@ -146,9 +154,11 @@ def run_range(start: datetime, end: datetime, *, operation: str = "BACKFILL",
                 incomplete_months.add(window_start.strftime("%Y%m"))
         if window_failed and stop_on_error:
             break
-    if operation == "REPAIR" and failed == 0 and missing == 0:
-        rebuild_window(start, end, task_no)
     rebuilt = []
+    if operation == "REPAIR" and failed == 0 and missing == 0:
+        for month_start, month_end in iter_month_ranges(start, end):
+            rebuild_window(month_start, month_end, task_no)
+            rebuilt.append(month_start.strftime("%Y%m"))
     if operation == "BACKFILL" and failed == 0:
         for month in sorted(changed_months - incomplete_months):
             month_start = datetime.strptime(month, "%Y%m")
