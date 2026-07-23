@@ -43,7 +43,8 @@ POST 接口只向中心库任务队列写入记录并返回 HTTP 202。禁止在
 - 源端流式 `fetchmany`，按 TradeId 去重，读完立即关闭连接。仅瞬时网络错误在初次失败后最多重试两次，间隔 2 秒、5 秒；表、字段、配置和索引问题不重试。
 - CHECK 投影只选择 TradeId，GantryId 与 TransTime 仅用于 WHERE，不读取业务字段。完整性唯一算法是源端 TradeId 集合减中心 trade_id 集合；中心额外数据不算缺失，源端零行是 COMPLETE。
 - 非 CHECK 在关闭门架连接后标准化并写 ODS 与规则命中。中心重试只复用内存快照，禁止重新访问门架。
-- 事实重建统一由 task runner 执行：LIVE 同一两小时窗口全部目标服务器 COMPLETE 后重建一次；REPAIR 整个任务无 FAILED 和 MISSING 后按受影响自然月分别重建；BACKFILL 仅在最新日志证明整自然月、全部启用可采集服务器窗口均 COMPLETE 后重建该月一次；CHECK 不重建事实。
+- 事实重建统一由 task runner 执行：LIVE 同一两小时窗口全部目标服务器 COMPLETE 后重建一次；REPAIR 整个任务无 FAILED 和 MISSING 后按受影响自然月分别重建；BACKFILL 固定使用 120 分钟标准窗口，并在最新日志证明整自然月、全部启用可采集服务器窗口均 COMPLETE 后重建该月一次，恢复任务全部 SKIPPED 也不例外；CHECK 不重建事实。
+- BACKFILL 不接受自定义窗口分钟数。指定时间范围或小于两小时的补数使用 REPAIR；REPAIR 仍可跨月提交，并按自然月拆分事实重建。不实现任意区间覆盖合并。
 - 单 worker 启动时先把遗留 RUNNING 同步日志终止为 `FAILED/UNCHECKED`（`WorkerRestart`），再将 RUNNING 手工任务恢复为 PENDING；重跑窗口始终新增唯一同步日志。
 - `missing-windows` 以服务器、开始和结束时间分组，只取最新有效日志；新 COMPLETE 会覆盖旧 MISSING 的页面状态，但不会修改旧日志。
 
@@ -53,7 +54,6 @@ POST 接口只向中心库任务队列写入记录并返回 HTTP 202。禁止在
 HSZ_ETL_SOURCE_BATCH_SIZE=2000
 HSZ_ETL_MAX_WORKERS=1
 HSZ_ETL_SOURCE_RETRIES=2
-HSZ_ETL_HISTORY_WINDOW_MINUTES=120
 HSZ_ETL_SLEEP_SECONDS=5
 HSZ_ETL_CENTER_RETRIES=2
 ```

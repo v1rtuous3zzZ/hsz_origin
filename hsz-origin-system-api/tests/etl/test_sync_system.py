@@ -221,6 +221,85 @@ def test_backfill_rebuilds_a_month_once(monkeypatch):
     assert rebuilt == ["202606"]
 
 
+def test_resumed_backfill_rebuilds_month_when_all_windows_are_skipped(monkeypatch):
+    monkeypatch.setattr(task_runner, "server_codes", lambda unused=None: ["S1"])
+    monkeypatch.setattr(task_runner, "sync_window", lambda *a, **k: {
+        "status": "SKIPPED", "check_status": "COMPLETE"
+    })
+    completeness = MagicMock(return_value=True)
+    monkeypatch.setattr(task_runner, "month_is_complete", completeness)
+    rebuilt = []
+    monkeypatch.setattr(
+        task_runner, "rebuild_window",
+        lambda start, end, task: rebuilt.append(start.strftime("%Y%m")),
+    )
+    result = task_runner.run_range(
+        datetime(2026, 6, 1), datetime(2026, 7, 1), sleep_seconds=0,
+    )
+    assert result["processed_windows"] == 30 * 12
+    assert rebuilt == ["202606"]
+    completeness.assert_called_once_with(
+        datetime(2026, 6, 1), datetime(2026, 7, 1), ["S1"]
+    )
+
+
+def test_backfill_rejects_non_standard_window_minutes(monkeypatch):
+    monkeypatch.setattr(task_runner, "server_codes", lambda unused=None: ["S1"])
+    with pytest.raises(ValueError, match="120"):
+        task_runner.run_range(
+            datetime(2026, 6, 1), datetime(2026, 6, 1, 4),
+            window_minutes=60, sleep_seconds=0,
+        )
+
+
+@pytest.mark.filterwarnings("ignore:The default datetime adapter is deprecated:DeprecationWarning")
+def test_backfill_month_log_count_matches_completeness_expectation(monkeypatch):
+    month_start = datetime(2026, 6, 1)
+    month_end = datetime(2026, 7, 1)
+    windows = list(task_runner.iter_windows(month_start, month_end, 120))
+    engine = create_engine("sqlite://")
+    with engine.begin() as connection:
+        connection.execute(text("""
+            CREATE TABLE t_etl_sync_log (
+                sync_log_id INTEGER PRIMARY KEY, server_code TEXT,
+                window_start DATETIME, window_end DATETIME,
+                status TEXT, check_status TEXT
+            )
+        """))
+        connection.execute(text("""
+            INSERT INTO t_etl_sync_log
+            (sync_log_id,server_code,window_start,window_end,status,check_status)
+            VALUES (:id,'S1',:start,:end,'SKIPPED','COMPLETE')
+        """), [
+            {"id": index, "start": start, "end": end}
+            for index, (start, end) in enumerate(windows, start=1)
+        ])
+    monkeypatch.setattr(task_runner, "SessionLocal", lambda: Session(engine))
+    assert len(windows) == 30 * 12
+    assert task_runner.month_is_complete(month_start, month_end, ["S1"]) is True
+
+
+@pytest.mark.filterwarnings("ignore:The default datetime adapter is deprecated:DeprecationWarning")
+def test_month_completeness_uses_latest_status_including_failure(monkeypatch):
+    engine = create_engine("sqlite://")
+    with engine.begin() as connection:
+        connection.execute(text("""
+            CREATE TABLE t_etl_sync_log (
+                sync_log_id INTEGER PRIMARY KEY, server_code TEXT,
+                window_start TEXT, window_end TEXT, status TEXT, check_status TEXT
+            )
+        """))
+        connection.execute(text("""
+            INSERT INTO t_etl_sync_log VALUES
+            (1,'S1','2026-06-01 00:00','2026-06-01 02:00','SUCCESS','COMPLETE'),
+            (2,'S1','2026-06-01 00:00','2026-06-01 02:00','FAILED','UNCHECKED')
+        """))
+    monkeypatch.setattr(task_runner, "SessionLocal", lambda: Session(engine))
+    assert task_runner.month_is_complete(
+        datetime(2026, 6, 1), datetime(2026, 6, 1, 2), ["S1"]
+    ) is False
+
+
 def test_single_server_backfill_does_not_rebuild_until_all_servers_complete(monkeypatch):
     monkeypatch.setattr(task_runner, "server_codes", lambda code=None: ["S1"] if code else ["S1", "S2"])
     monkeypatch.setattr(task_runner, "sync_window", lambda *a, **k: {
@@ -292,6 +371,21 @@ def test_cross_month_repair_rebuilds_each_affected_month(monkeypatch):
         (datetime(2026, 6, 30, 22), datetime(2026, 7, 1), "REPAIR-CROSS-MONTH"),
         (datetime(2026, 7, 1), datetime(2026, 7, 1, 2), "REPAIR-CROSS-MONTH"),
     ]
+
+
+def test_repair_accepts_one_hour_range(monkeypatch):
+    monkeypatch.setattr(task_runner, "server_codes", lambda unused=None: ["S1"])
+    synced = []
+    monkeypatch.setattr(task_runner, "sync_window", lambda code, start, end, *a, **k: (
+        synced.append((start, end)) or {"status": "SUCCESS", "check_status": "COMPLETE"}
+    ))
+    monkeypatch.setattr(task_runner, "rebuild_window", lambda *unused: None)
+    result = task_runner.run_range(
+        datetime(2026, 7, 1), datetime(2026, 7, 1, 1),
+        operation="REPAIR", window_minutes=60, sleep_seconds=0,
+    )
+    assert result["processed_windows"] == 1
+    assert synced == [(datetime(2026, 7, 1), datetime(2026, 7, 1, 1))]
 
 
 def test_repair_with_missing_window_does_not_rebuild(monkeypatch):
@@ -400,7 +494,7 @@ def test_repair_by_sync_id_forces_new_repair_execution(monkeypatch):
 def test_live_once_uses_configured_window_and_safety_delay(monkeypatch, capsys):
     configured = SimpleNamespace(
         live_window_minutes=180, safety_delay=timedelta(minutes=7), poll_seconds=60,
-        history_window_minutes=120, history_sleep_seconds=5,
+        history_sleep_seconds=5,
     )
     monkeypatch.setattr(cli, "settings", configured)
     aligned = MagicMock(return_value=(datetime(2026, 7, 1), datetime(2026, 7, 1, 3)))
@@ -416,6 +510,23 @@ def test_live_once_uses_configured_window_and_safety_delay(monkeypatch, capsys):
     cli.main()
     aligned.assert_called_once_with(minutes=180, safety_delay=timedelta(minutes=7))
     assert '"status": "PENDING"' in capsys.readouterr().out
+
+
+def test_backfill_cli_does_not_accept_window_minutes():
+    parser = cli.build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args([
+            "backfill", "--start", "2026-06-01T00:00:00",
+            "--end", "2026-07-01T00:00:00", "--window-minutes", "60",
+        ])
+
+
+def test_job_queue_rejects_non_standard_backfill_window():
+    with pytest.raises(ValueError, match="120"):
+        job_queue.enqueue_job(
+            MagicMock(), operation="BACKFILL", start=datetime(2026, 6, 1),
+            end=datetime(2026, 7, 1), window_minutes=60,
+        )
 
 
 def test_live_window_is_aligned_after_safety_delay():

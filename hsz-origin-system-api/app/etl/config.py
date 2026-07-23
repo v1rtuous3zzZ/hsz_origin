@@ -20,9 +20,6 @@ class EtlSettings:
         seconds=int(os.getenv("HSZ_ETL_SAFETY_DELAY_SECONDS", "120"))
     )
 
-    history_window_minutes: int = int(
-        os.getenv("HSZ_ETL_HISTORY_WINDOW_MINUTES", "120")
-    )
     history_sleep_seconds: int = int(os.getenv("HSZ_ETL_SLEEP_SECONDS", "5"))
 
     manual_job_poll_seconds: int = int(os.getenv("HSZ_ETL_MANUAL_JOB_POLL_SECONDS", "5"))

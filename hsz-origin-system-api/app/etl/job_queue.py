@@ -32,6 +32,8 @@ class EtlJob:
 def enqueue_job(db, *, operation: str, start, end, server_code: str | None = None,
                 force: bool = False, window_minutes: int = 120, sleep_seconds: int = 5,
                 stop_on_error: bool = False, source_mode: str = "auto") -> dict:
+    if operation == "BACKFILL" and window_minutes != 120:
+        raise ValueError("BACKFILL 固定使用 120 分钟窗口")
     if operation == "LIVE":
         existing = db.execute(text(
             "SELECT job_id,task_no,status FROM t_etl_manual_job "

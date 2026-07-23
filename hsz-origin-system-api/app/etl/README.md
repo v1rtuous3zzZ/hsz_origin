@@ -27,8 +27,9 @@ python -m app.etl.cli worker
 当前月固定读 `dfs_gantry_transaction`，过去月固定读 `dfs_gantry_transactionYYYYMM`；
 调试时可显式指定 `--source-mode realtime|history`。不会双表扫描或自动拆窗。
 
-历史初始化建议逐月提交。默认窗口 120 分钟、流式批量 2000、窗口间休眠 5 秒、
-单 worker。BACKFILL 在整月全部可采集服务器窗口 COMPLETE 后只重建一次事实；LIVE 重建当前窗口；REPAIR
+历史初始化建议逐月提交。BACKFILL 固定使用 120 分钟标准窗口，流式批量 2000、窗口间休眠 5 秒、
+单 worker；恢复后即使全部窗口均 SKIPPED，也会在最新日志证明整月 COMPLETE 后重建事实。
+某个两小时窗口需要更小范围补数时使用 REPAIR，REPAIR 可处理指定时间范围。LIVE 重建当前窗口；REPAIR
 整个任务无失败和缺失后按受影响自然月分别重建；CHECK 不写业务数据也不重建事实。
 
 worker 启动时先将遗留 RUNNING 同步日志标记为 `WorkerRestart` 失败，再把 RUNNING 手工

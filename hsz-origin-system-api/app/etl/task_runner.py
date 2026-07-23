@@ -70,7 +70,7 @@ def month_is_complete(month_start: datetime, month_end: datetime, codes: list[st
     with SessionLocal() as db:
         statement = text("""
             WITH ranked AS (
-                SELECT server_code,window_start,window_end,check_status,
+                SELECT server_code,window_start,window_end,status,check_status,
                        ROW_NUMBER() OVER (
                            PARTITION BY server_code,window_start,window_end
                            ORDER BY sync_log_id DESC
@@ -78,10 +78,10 @@ def month_is_complete(month_start: datetime, month_end: datetime, codes: list[st
                 FROM t_etl_sync_log
                 WHERE window_start>=:start AND window_end<=:end
                   AND server_code IN :codes
-                  AND status IN ('SUCCESS','SKIPPED')
             )
             SELECT COUNT(*) FROM ranked
-            WHERE row_no=1 AND check_status='COMPLETE'
+            WHERE row_no=1 AND status IN ('SUCCESS','SKIPPED')
+              AND check_status='COMPLETE'
         """).bindparams(bindparam("codes", expanding=True))
         complete = db.execute(
             statement, {"start": month_start, "end": month_end, "codes": codes}
@@ -111,16 +111,19 @@ def run_range(start: datetime, end: datetime, *, operation: str = "BACKFILL",
               sleep_seconds: int = 5, force: bool = False,
               stop_on_error: bool = False, task_no: str | None = None,
               progress_callback=None, source_mode: str = "auto") -> dict:
+    if operation == "BACKFILL" and window_minutes != 120:
+        raise ValueError("BACKFILL 固定使用 120 分钟窗口")
     task_no = task_no or f"{operation}-{uuid.uuid4().hex[:16]}"
     windows = list(iter_windows(start, end, window_minutes))
     codes = server_codes(server_code)
     total = len(windows) * len(codes)
     recent_results = deque(maxlen=100)
     processed, failed, missing, complete = 0, 0, 0, 0
-    changed_months: set[str] = set()
-    incomplete_months: set[str] = set()
+    touched_months: set[str] = set()
     all_codes = server_codes(None)
     for window_start, window_end in windows:
+        if operation == "BACKFILL":
+            touched_months.add(window_start.strftime("%Y%m"))
         window_failed = False
         window_missing = False
         for code in codes:
@@ -134,11 +137,8 @@ def run_range(start: datetime, end: datetime, *, operation: str = "BACKFILL",
             elif result.get("check_status") == "MISSING":
                 missing += 1
                 window_missing = True
-                incomplete_months.add(window_start.strftime("%Y%m"))
             else:
                 complete += 1
-                if operation == "BACKFILL" and result["status"] == "SUCCESS":
-                    changed_months.add(window_start.strftime("%Y%m"))
             if progress_callback:
                 progress_callback({"total_windows": total, "processed_windows": processed,
                                    "complete_windows": complete, "missing_windows": missing,
@@ -149,9 +149,6 @@ def run_range(start: datetime, end: datetime, *, operation: str = "BACKFILL",
                 time.sleep(sleep_seconds)
         if operation == "LIVE" and not window_failed and not window_missing:
             rebuild_window(window_start, window_end, task_no)
-        if operation == "BACKFILL":
-            if window_failed:
-                incomplete_months.add(window_start.strftime("%Y%m"))
         if window_failed and stop_on_error:
             break
     rebuilt = []
@@ -159,8 +156,8 @@ def run_range(start: datetime, end: datetime, *, operation: str = "BACKFILL",
         for month_start, month_end in iter_month_ranges(start, end):
             rebuild_window(month_start, month_end, task_no)
             rebuilt.append(month_start.strftime("%Y%m"))
-    if operation == "BACKFILL" and failed == 0:
-        for month in sorted(changed_months - incomplete_months):
+    if operation == "BACKFILL":
+        for month in sorted(touched_months):
             month_start = datetime.strptime(month, "%Y%m")
             month_end = next_month(month_start)
             if not month_is_complete(month_start, month_end, all_codes):

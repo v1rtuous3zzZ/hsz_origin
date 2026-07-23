@@ -39,7 +39,6 @@ def build_parser() -> argparse.ArgumentParser:
     source_options(backfill)
     backfill.add_argument("--start", type=parse_time, required=True)
     backfill.add_argument("--end", type=parse_time, required=True)
-    backfill.add_argument("--window-minutes", type=int, default=settings.history_window_minutes)
     backfill.add_argument("--sleep-seconds", type=int, default=settings.history_sleep_seconds)
     backfill.add_argument("--force", "--no-resume", action="store_true", dest="force")
     backfill.add_argument("--stop-on-error", action="store_true")
@@ -96,7 +95,7 @@ def main() -> None:
     elif args.command == "backfill":
         result = enqueue(
             "BACKFILL", args.start, args.end, force=args.force,
-            window_minutes=args.window_minutes, sleep_seconds=args.sleep_seconds,
+            window_minutes=120, sleep_seconds=args.sleep_seconds,
             stop_on_error=args.stop_on_error,
         )
     elif args.command == "nightly-check":
