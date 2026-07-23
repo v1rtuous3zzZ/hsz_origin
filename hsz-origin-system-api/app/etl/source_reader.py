@@ -102,7 +102,7 @@ def read_rows(connection, table: str, columns: dict[str, str], physical_codes: l
             yield from rows
 
 
-def read_source_snapshot(server, table: str, physical_codes: list[str], start, end, *,
+def read_source_snapshot(server, tables: tuple[str, ...], physical_codes: list[str], start, end, *,
                          check_only: bool, batch_size: int, retries: int) -> tuple[list[dict], dict]:
     """读取单服务器单窗口，返回前关闭连接；只重试瞬时网络错误。"""
     for attempt in range(1, retries + 2):
@@ -110,21 +110,22 @@ def read_source_snapshot(server, table: str, physical_codes: list[str], start, e
         started = time.perf_counter()
         try:
             connection = source_connection(server)
-            columns, _ = inspect_remote(connection, table)
-            resolved = resolve_columns(columns)
-            validate_query_index(
-                connection, server, table, resolved, required=True,
-                physical_code=physical_codes[0],
-            )
             rows_by_id: dict[str, dict] = {}
             raw_count = 0
             select_names = ("trade_id",) if check_only else None
-            for row in read_rows(
-                connection, table, resolved, physical_codes, start, end, batch_size,
-                select_names=select_names,
-            ):
-                raw_count += 1
-                rows_by_id.setdefault(str(row["trade_id"]), row)
+            for table in tables:
+                columns, _ = inspect_remote(connection, table)
+                resolved = resolve_columns(columns)
+                validate_query_index(
+                    connection, server, table, resolved, required=True,
+                    physical_code=physical_codes[0],
+                )
+                for row in read_rows(
+                    connection, table, resolved, physical_codes, start, end, batch_size,
+                    select_names=select_names,
+                ):
+                    raw_count += 1
+                    rows_by_id.setdefault(str(row["trade_id"]), row)
             return list(rows_by_id.values()), {
                 "raw_count": raw_count,
                 "unique_count": len(rows_by_id),

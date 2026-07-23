@@ -25,7 +25,8 @@ python -m app.etl.cli worker
 前五类命令只入队；只有最后的 `worker` 读取门架。生产不得启动第二个 worker。
 
 当前月固定读 `dfs_gantry_transaction`，过去月固定读 `dfs_gantry_transactionYYYYMM`；
-调试时可显式指定 `--source-mode realtime|history`。不会双表扫描或自动拆窗。
+`auto` 模式对最近 10 天依次读取实时表和窗口所属历史月表，按 TradeId 去重且实时表优先；
+更早窗口只读历史月表。调试时可显式指定 `--source-mode realtime|history`，两者只读指定表。
 
 历史初始化建议逐月提交。BACKFILL 固定使用 120 分钟标准窗口，流式批量 2000、窗口间休眠 5 秒、
 单 worker；恢复后即使全部窗口均 SKIPPED，也会在最新日志证明整月 COMPLETE 后重建事实。

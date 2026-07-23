@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.api.v1.etl import missing_windows, query_missing_windows
 from app.etl import cli, job_queue, source_reader, sync_service, task_runner
-from app.etl.source_schema import source_table
+from app.etl.source_schema import source_tables
 from app.etl.sync_log import latest_complete, start_sync
 from app.etl.verifier import center_trade_ids, missing_trade_ids
 
@@ -53,7 +53,7 @@ def test_trade_ids_are_deduplicated_and_check_reads_only_trade_id(monkeypatch):
     ))
     monkeypatch.setattr(source_reader, "validate_query_index", lambda *a, **k: True)
     rows, metrics = source_reader.read_source_snapshot(
-        server(), "current", ["g"], datetime(2026, 7, 1), datetime(2026, 7, 1, 2),
+        server(), ("current",), ["g"], datetime(2026, 7, 1), datetime(2026, 7, 1, 2),
         check_only=True, batch_size=2000, retries=2,
     )
     sql = cursor.execute.call_args.args[0]
@@ -66,13 +66,42 @@ def test_trade_ids_are_deduplicated_and_check_reads_only_trade_id(monkeypatch):
     connection.close.assert_called_once()
 
 
+def test_recent_snapshot_merges_current_and_history_with_current_preferred(monkeypatch):
+    connection = MagicMock()
+    monkeypatch.setattr(source_reader, "source_connection", lambda unused: connection)
+    monkeypatch.setattr(source_reader, "inspect_remote", lambda *unused: (
+        ["TradeId", "GantryId", "TransTime"], []
+    ))
+    monkeypatch.setattr(source_reader, "validate_query_index", lambda *a, **k: True)
+    monkeypatch.setattr(
+        source_reader,
+        "read_rows",
+        lambda unused_connection, table, *args, **kwargs: iter(
+            [{"trade_id": "shared", "value": table}, {"trade_id": table, "value": table}]
+        ),
+    )
+
+    rows, metrics = source_reader.read_source_snapshot(
+        server(), ("current", "history202607"), ["g"],
+        datetime(2026, 7, 20), datetime(2026, 7, 20, 2),
+        check_only=False, batch_size=2000, retries=2,
+    )
+
+    assert {row["trade_id"] for row in rows} == {"shared", "current", "history202607"}
+    assert next(row for row in rows if row["trade_id"] == "shared")["value"] == "current"
+    assert metrics["raw_count"] == 4
+    assert metrics["unique_count"] == 3
+    assert metrics["duplicate_count"] == 1
+    connection.close.assert_called_once()
+
+
 def test_non_transient_source_error_is_not_retried(monkeypatch):
     connection = MagicMock()
     monkeypatch.setattr(source_reader, "source_connection", MagicMock(return_value=connection))
     monkeypatch.setattr(source_reader, "inspect_remote", MagicMock(side_effect=ValueError("bad schema")))
     with pytest.raises(ValueError):
         source_reader.read_source_snapshot(
-            server(), "current", ["g"], datetime(2026, 7, 1), datetime(2026, 7, 1, 2),
+            server(), ("current",), ["g"], datetime(2026, 7, 1), datetime(2026, 7, 1, 2),
             check_only=True, batch_size=2000, retries=2,
         )
     assert source_reader.inspect_remote.call_count == 1
@@ -92,7 +121,7 @@ def test_transient_source_error_gets_two_retries(monkeypatch):
     monkeypatch.setattr(source_reader, "validate_query_index", lambda *a, **k: True)
     monkeypatch.setattr(source_reader.time, "sleep", sleeps.append)
     source_reader.read_source_snapshot(
-        server(), "current", ["g"], datetime(2026, 7, 1), datetime(2026, 7, 1, 2),
+        server(), ("current",), ["g"], datetime(2026, 7, 1), datetime(2026, 7, 1, 2),
         check_only=True, batch_size=2000, retries=2,
     )
     assert connect.call_count == 3
@@ -124,12 +153,20 @@ def test_resume_and_force_rules(operation, force, complete, expected):
     assert sync_service.should_skip(operation, force, complete) is expected
 
 
-def test_current_and_past_month_choose_exactly_one_table():
+def test_recent_auto_reads_current_then_history_and_old_window_reads_history():
     now = datetime(2026, 7, 23)
-    assert source_table(server(), datetime(2026, 7, 1), now) == "current"
-    assert source_table(server(), datetime(2026, 6, 1), now) == "history202606"
-    assert source_table(server(), datetime(2026, 6, 1), now, "realtime") == "current"
-    assert source_table(server(), datetime(2026, 7, 1), now, "history") == "history202607"
+    assert source_tables(
+        server(), datetime(2026, 7, 20), datetime(2026, 7, 20, 2), now
+    ) == ("current", "history202607")
+    assert source_tables(
+        server(), datetime(2026, 7, 1), datetime(2026, 7, 1, 2), now
+    ) == ("history202607",)
+    assert source_tables(
+        server(), datetime(2026, 6, 1), datetime(2026, 6, 1, 2), now, "realtime"
+    ) == ("current",)
+    assert source_tables(
+        server(), datetime(2026, 7, 1), datetime(2026, 7, 1, 2), now, "history"
+    ) == ("history202607",)
 
 
 def test_explain_accepts_actual_range_key_without_hardcoding_index_order():
@@ -202,9 +239,12 @@ def test_nightly_d1_d2_are_two_days_and_twenty_four_windows():
 def test_cross_month_nightly_windows_resolve_to_history_tables():
     now = datetime(2026, 8, 2)
     ranges = task_runner.nightly_ranges(now)
-    tables = {source_table(server(), start, now) for day in ranges
+    tables = {source_tables(server(), start, unused, now) for day in ranges
               for start, unused in task_runner.iter_windows(*day)}
-    assert tables == {"current", "history202607"}
+    assert tables == {
+        ("current", "history202607"),
+        ("current", "history202608"),
+    }
 
 
 def test_backfill_rebuilds_a_month_once(monkeypatch):

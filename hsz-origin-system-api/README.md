@@ -40,8 +40,8 @@ ETL 不在 FastAPI 请求、startup 或 BackgroundTasks 中执行：
 ```
 
 除 `worker` 外的 CLI 与 HTTP 入口都只写中心任务队列。唯一常驻 worker 串行处理
-LIVE/BACKFILL/REPAIR/CHECK 的服务器和窗口；当前月只读实时表、过去月只读历史月表，
-不双表扫描、不递归拆窗。领取优先级为 LIVE、REPAIR、CHECK、BACKFILL；只影响下一条
+LIVE/BACKFILL/REPAIR/CHECK 的服务器和窗口；最近 10 天依次读取实时表和历史月表并按
+TradeId 去重，更早窗口只读历史月表，不递归拆窗。领取优先级为 LIVE、REPAIR、CHECK、BACKFILL；只影响下一条
 PENDING 任务。BACKFILL 只接受 Asia/Shanghai 偶数整点边界和 120 分钟窗口；任意范围
 使用 REPAIR。没有启用、可达且具备有效门架映射的服务器时任务直接报错。源读取完成即
 关闭连接，中心失败使用内存快照重试。

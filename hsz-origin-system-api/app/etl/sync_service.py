@@ -8,7 +8,7 @@ from app.etl.center_writer import normalize_rows, write_snapshot
 from app.etl.config import EtlSettings
 from app.etl.source_config import load_mapping, load_rules, load_sources
 from app.etl.source_reader import read_source_snapshot
-from app.etl.source_schema import source_table
+from app.etl.source_schema import source_tables
 from app.etl.sync_log import finish_sync, latest_complete, start_sync
 from app.etl.verifier import center_trade_ids, missing_trade_ids
 
@@ -52,7 +52,8 @@ def sync_window(server_code: str, start: datetime, end: datetime, operation: str
         raise ValueError(f"找不到唯一且可采集的源服务器：{server_code}")
     server = sources[0]
     shanghai_now = datetime.now(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
-    table = source_table(server, start, shanghai_now, source_mode)
+    tables = source_tables(server, start, end, shanghai_now, source_mode)
+    table_label = ",".join(tables)
     started = time.perf_counter()
     with SessionLocal.begin() as db:
         sync_log_id, sync_id = start_sync(
@@ -60,19 +61,19 @@ def sync_window(server_code: str, start: datetime, end: datetime, operation: str
         )
         if should_skip(operation, force, latest_complete(db, server_code, start, end)):
             finish_sync(db, sync_id, status="SKIPPED", check_status="COMPLETE",
-                        source_table=table, error_message="已存在完整同步记录",
+                        source_table=table_label, error_message="已存在完整同步记录",
                         total_duration_ms=round((time.perf_counter() - started) * 1000))
             return {"sync_id": sync_id, "status": "SKIPPED", "check_status": "COMPLETE"}
     try:
         rows, source_metrics = read_source_snapshot(
-            server, table, list(mapping[server.source_server_id]), start, end,
+            server, tables, list(mapping[server.source_server_id]), start, end,
             check_only=operation == "CHECK", batch_size=settings.batch_size,
             retries=settings.source_retries,
         )
         source_ids = {str(row["trade_id"]) for row in rows}
         write_metrics = {"inserted_count": 0, "updated_count": 0, "write_duration_ms": 0}
         if operation != "CHECK":
-            events = normalize_rows(rows, server=server, table=table,
+            events = normalize_rows(rows, server=server, table=table_label,
                                     physical_mapping=mapping[server.source_server_id])
             write_metrics = write_with_retry(events, rules, sync_log_id)
         verify_started = time.perf_counter()
@@ -82,7 +83,7 @@ def sync_window(server_code: str, start: datetime, end: datetime, operation: str
             check_status = "COMPLETE" if not missing else "MISSING"
             finish_sync(
                 db, sync_id, status="SUCCESS", check_status=check_status,
-                source_table=table, source_unique_count=len(source_ids),
+                source_table=table_label, source_unique_count=len(source_ids),
                 center_matched_count=len(found), missing_count=len(missing),
                 duplicate_count=source_metrics["duplicate_count"],
                 query_duration_ms=source_metrics["query_duration_ms"],
@@ -91,14 +92,14 @@ def sync_window(server_code: str, start: datetime, end: datetime, operation: str
                 missing_ids=missing, **write_metrics,
             )
         return {"sync_id": sync_id, "task_no": task_no, "operation": operation,
-                "server_code": server_code, "source_table": table, "status": "SUCCESS",
+                "server_code": server_code, "source_table": table_label, "status": "SUCCESS",
                 "check_status": check_status, "source_unique_count": len(source_ids),
                 "center_matched_count": len(found), "missing_count": len(missing),
                 **source_metrics, **write_metrics}
     except Exception as error:
         with SessionLocal.begin() as db:
             finish_sync(db, sync_id, status="FAILED", error_type=type(error).__name__,
-                        error_message=str(error)[:2000], source_table=table,
+                        error_message=str(error)[:2000], source_table=table_label,
                         total_duration_ms=round((time.perf_counter() - started) * 1000))
         return {"sync_id": sync_id, "task_no": task_no, "status": "FAILED",
                 "error_type": type(error).__name__, "error": str(error)}

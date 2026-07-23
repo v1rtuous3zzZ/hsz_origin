@@ -38,7 +38,7 @@ POST 接口只向中心库任务队列写入记录并返回 HTTP 202。禁止在
 - 核心函数是 `sync_window(server_code,start,end,operation,force=False)`；operation 仅有 `LIVE/BACKFILL/REPAIR/CHECK`。
 - 所有 CLI/API/timer 的同步、检查和补数入口只向中心任务表入队；唯一常驻 `worker` 串行读取门架并处理服务器和窗口。待领取任务按 LIVE、REPAIR、CHECK、BACKFILL 排序，同类任务再按 job_id 排序；不抢占运行中任务。不使用分布式锁、命名锁、父子批次、checkpoint、递归拆窗或成功区间拼接。
 - 每次实际窗口循环 INSERT 一条新 `t_etl_sync_log`；旧日志永不复用。BACKFILL 命中既有 COMPLETE 时也新增 SKIPPED 日志。
-- 当前自然月只读实时表；过去自然月只读对应历史月表；统一使用 `Asia/Shanghai`。不自动双表扫描，不用十分钟交易片段推断完整性。
+- `source-mode=auto` 对最近 10 天窗口依次只读实时表和窗口所属历史月表，合并后按 TradeId 去重且实时表记录优先；更早窗口只读历史月表。显式 `realtime` 或 `history` 仍只读指定类型；统一使用 `Asia/Shanghai`。
 - 源 SQL 必须保留原始 `TransTime >= start AND TransTime < end AND GantryId IN (...)`。读取前以 SHOW/EXPLAIN 判断真实执行计划，不硬编码索引名或固定索引顺序。
 - 源端流式 `fetchmany`，按 TradeId 去重，读完立即关闭连接。仅瞬时网络错误在初次失败后最多重试两次，间隔 2 秒、5 秒；表、字段、配置和索引问题不重试。
 - CHECK 投影只选择 TradeId，GantryId 与 TransTime 仅用于 WHERE，不读取业务字段。完整性唯一算法是源端 TradeId 集合减中心 trade_id 集合；中心额外数据不算缺失，源端零行是 COMPLETE。
