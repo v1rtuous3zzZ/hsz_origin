@@ -32,7 +32,7 @@ class EtlSettings:
     )
 
     history_window_minutes: int = int(
-        os.getenv("HSZ_ETL_HISTORY_WINDOW_MINUTES", "120")
+        os.getenv("HSZ_ETL_HISTORY_WINDOW_MINUTES", "360")
     )
     history_sleep_seconds: int = int(os.getenv("HSZ_ETL_HISTORY_SLEEP_SECONDS", "0"))
 
