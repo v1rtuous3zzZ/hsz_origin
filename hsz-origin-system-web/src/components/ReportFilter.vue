@@ -121,13 +121,6 @@ const rangeShortcuts = [
       return [yearStart(now), yearEnd(now)];
     },
   },
-  {
-    text: "去年",
-    value: () => {
-      const previous = new Date(new Date().getFullYear() - 1, 0, 1);
-      return [yearStart(previous), yearEnd(previous)];
-    },
-  },
 ];
 const directionSelection = computed<number | number[]>({
   get: () =>
