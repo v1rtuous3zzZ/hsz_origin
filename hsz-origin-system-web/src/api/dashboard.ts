@@ -4,7 +4,7 @@ const pad = (value: number) => String(value).padStart(2, "0");
 const formatDateTime = (value: Date) =>
   `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}T${pad(value.getHours())}:${pad(value.getMinutes())}:00`;
 
-export const todayRange = () => {
+const todayRange = () => {
   const start = new Date();
   start.setHours(0, 0, 0, 0);
   const end = new Date(start);
@@ -15,7 +15,7 @@ export const todayRange = () => {
 type DashboardRange = { start: string; end: string; latestHour?: string };
 let cachedRange: DashboardRange | undefined;
 
-export const getLatestDashboardRange = async (): Promise<DashboardRange> => {
+const getLatestDashboardRange = async (): Promise<DashboardRange> => {
   if (cachedRange) return cachedRange;
   const { data } = await request.get<{
     start: string | null;
@@ -29,7 +29,7 @@ export const getLatestDashboardRange = async (): Promise<DashboardRange> => {
   return cachedRange;
 };
 
-export const currentHourRange = (latestHour?: string) => {
+const currentHourRange = (latestHour?: string) => {
   const end = latestHour ? new Date(latestHour) : new Date();
   end.setHours(end.getHours() + 1, 0, 0, 0);
   const start = new Date(end);
@@ -37,7 +37,7 @@ export const currentHourRange = (latestHour?: string) => {
   return { start: formatDateTime(start), end: formatDateTime(end) };
 };
 
-export const provinceRanges = (type: "day" | "hour", dayRange?: DashboardRange) => {
+const provinceRanges = (type: "day" | "hour", dayRange?: DashboardRange) => {
   const range =
     type === "day" && dayRange
       ? dayRange

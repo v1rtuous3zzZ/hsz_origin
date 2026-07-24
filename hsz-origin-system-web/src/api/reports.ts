@@ -11,7 +11,7 @@ import type {
   VehicleTypeRow,
 } from "../types/reports";
 
-export interface SyncLog {
+interface SyncLog {
   sync_id: string;
   task_no: string;
   operation: "LIVE" | "BACKFILL" | "REPAIR" | "CHECK";

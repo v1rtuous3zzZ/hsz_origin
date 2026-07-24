@@ -14,7 +14,7 @@ export const defaultHourRange = () => {
   start.setHours(0, 0, 0, 0);
   return [start, new Date()] as [Date, Date];
 };
-export const formatPeriod = (
+const formatPeriod = (
   period: ReportPeriod,
   granularity: Granularity,
 ) => {
@@ -22,14 +22,6 @@ export const formatPeriod = (
   if (granularity === "year") return `${value}年`;
   if (granularity === "month") return value.slice(0, 7);
   return value.replace("T", " ").slice(0, granularity === "hour" ? 13 : 10);
-};
-
-export const formatPeriodHeader = (
-  period: ReportPeriod,
-  granularity: Granularity,
-) => {
-  const value = String(period);
-  return formatPeriodHeaderInContext(period, granularity, value, value);
 };
 
 export const formatPeriodHeaderInContext = (
