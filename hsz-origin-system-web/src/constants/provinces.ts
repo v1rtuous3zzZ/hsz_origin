@@ -1,4 +1,4 @@
-export const provinceLabels: Record<string, string> = {
+const provinceLabels: Record<string, string> = {
   "11": "北京市",
   "12": "天津市",
   "13": "河北省",

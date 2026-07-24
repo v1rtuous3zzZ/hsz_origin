@@ -15,18 +15,18 @@ def write_events(
     batch_id: int,
     batch_size: int = 5000,
 ):
-    """分批幂等写入中心 ODS；uk_ods_event_key 保证重复窗口安全。"""
+    """分批幂等写入中心 ODS；trade_id 主键保证重复窗口安全。"""
     if not events:
         return
     table = f"t_ods_event_{events[0].event_time:%Y%m}"
     statement = text(
         f"INSERT INTO `{table}` "
-        "(event_key,source_server_id,source_table_name,source_trade_id,event_time,"
+        "(trade_id,source_server_id,source_table_name,event_time,"
         "entry_time,vehicle_plate_no,current_physical_gantry_code,current_gantry_hex,"
         "previous_gantry_hex,previous_gantry_source,raw_previous_gantry_json,"
         "vehicle_type_code,entry_station_code,media_type,trade_result,obu_trade_result,"
         "success_flag,success_rule_code,batch_id) VALUES "
-        "(:event_key,:source_server_id,:source_table_name,:source_trade_id,:event_time,"
+        "(:trade_id,:source_server_id,:source_table_name,:event_time,"
         ":entry_time,:vehicle_plate_no,:current_physical_gantry_code,:current_gantry_hex,"
         ":previous_gantry_hex,:previous_gantry_source,:raw_previous_gantry_json,"
         ":vehicle_type_code,:entry_station_code,:media_type,:trade_result,:obu_trade_result,"

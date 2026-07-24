@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 REQUIRED = ("trade_id", "trans_time", "gantry_id")
 ALIASES = {
     "trade_id": ("tradeid", "trade_id"),
@@ -35,3 +37,23 @@ def resolve_columns(columns: list[str]) -> dict[str, str]:
 
 def monthly_table(pattern: str | None, when) -> str | None:
     return pattern.replace("{yyyyMM}", when.strftime("%Y%m")) if pattern else None
+
+
+def source_tables(server, window_start, window_end, now, source_mode: str = "auto") -> tuple[str, ...]:
+    """最近十天依次读实时表和历史月表，更早窗口只读历史月表。"""
+    mode = source_mode.lower()
+    if mode == "realtime":
+        return (server.current_table_name,)
+    if mode == "history":
+        table = monthly_table(server.monthly_table_pattern, window_start)
+        if not table:
+            raise ValueError("源服务器未配置历史月表")
+        return (table,)
+    if mode != "auto":
+        raise ValueError("source_mode 只能是 auto、realtime 或 history")
+    table = monthly_table(server.monthly_table_pattern, window_start)
+    if not table:
+        raise ValueError("源服务器未配置历史月表")
+    if window_end > now - timedelta(days=10):
+        return (server.current_table_name, table)
+    return (table,)

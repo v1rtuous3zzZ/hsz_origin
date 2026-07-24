@@ -14,7 +14,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="沪苏浙 G50 溯源系统 API", lifespan=lifespan)
+app = FastAPI(title="沪苏浙 G50 溯源系统 API", version="1.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],

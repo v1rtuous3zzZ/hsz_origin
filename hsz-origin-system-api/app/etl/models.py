@@ -27,10 +27,9 @@ class Rule:
 
 @dataclass(frozen=True)
 class Event:
-    event_key: bytes
+    trade_id: str
     source_server_id: int
     source_table_name: str
-    source_trade_id: str
     event_time: datetime
     current_physical_gantry_code: str
     current_gantry_hex: str

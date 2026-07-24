@@ -1,0 +1,10 @@
+[Unit]
+Description=Run HSZ Origin D-1/D-2 check at 03:00
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 Asia/Shanghai
+Persistent=true
+Unit=hsz-origin-nightly-check.service
+
+[Install]
+WantedBy=timers.target

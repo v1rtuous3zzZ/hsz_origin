@@ -6,15 +6,15 @@ export interface DirectionOption {
   direction_name: string;
   availability: "AVAILABLE" | "UNAVAILABLE";
 }
-export interface LocalEntryStationOption {
+interface LocalEntryStationOption {
   station_id: number;
   station_name: string;
 }
-export interface VehicleTypeOption {
+interface VehicleTypeOption {
   vehicle_type_code: string;
   vehicle_type_name: string;
 }
-export interface MediaTypeOption {
+interface MediaTypeOption {
   media_type_code: string;
   media_type_name: string;
 }

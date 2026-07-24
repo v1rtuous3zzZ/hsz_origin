@@ -1,0 +1,12 @@
+[Unit]
+Description=HSZ Origin D-1/D-2 TradeId check
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/hsz-origin/api
+Environment=PYTHONPATH=/opt/hsz-origin/api
+EnvironmentFile=/opt/hsz-origin/config/api.env
+ExecStart=/opt/hsz-origin/api/venv/bin/python scripts/run_nightly_check.py
+StandardOutput=append:/opt/hsz-origin/logs/nightly-check.log
+StandardError=append:/opt/hsz-origin/logs/nightly-check.log

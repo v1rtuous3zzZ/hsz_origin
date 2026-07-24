@@ -3,22 +3,11 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 
-def _env_bool(name: str, default: bool) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
 @dataclass(frozen=True)
 class EtlSettings:
-    batch_size: int = int(os.getenv("HSZ_ETL_BATCH_SIZE", "2000"))
-    max_workers: int = int(os.getenv("HSZ_ETL_MAX_WORKERS", "4"))
+    batch_size: int = int(os.getenv("HSZ_ETL_SOURCE_BATCH_SIZE", "2000"))
+    max_workers: int = int(os.getenv("HSZ_ETL_MAX_WORKERS", "1"))
     source_retries: int = int(os.getenv("HSZ_ETL_SOURCE_RETRIES", "2"))
-    source_lock_timeout_seconds: int = int(
-        os.getenv("HSZ_ETL_SOURCE_LOCK_TIMEOUT_SECONDS", "300")
-    )
-    serialize_source_reads: bool = _env_bool("HSZ_ETL_SERIALIZE_SOURCE_READS", True)
 
     center_retries: int = int(os.getenv("HSZ_ETL_CENTER_RETRIES", "2"))
     center_write_batch_size: int = int(
@@ -31,20 +20,13 @@ class EtlSettings:
         seconds=int(os.getenv("HSZ_ETL_SAFETY_DELAY_SECONDS", "120"))
     )
 
-    history_window_minutes: int = int(
-        os.getenv("HSZ_ETL_HISTORY_WINDOW_MINUTES", "360")
-    )
-    history_sleep_seconds: int = int(os.getenv("HSZ_ETL_HISTORY_SLEEP_SECONDS", "0"))
+    history_sleep_seconds: int = int(os.getenv("HSZ_ETL_SLEEP_SECONDS", "5"))
 
     manual_job_poll_seconds: int = int(os.getenv("HSZ_ETL_MANUAL_JOB_POLL_SECONDS", "5"))
-    manual_job_stale_minutes: int = int(
-        os.getenv("HSZ_ETL_MANUAL_JOB_STALE_MINUTES", "360")
-    )
 
-    overlap: timedelta = timedelta(seconds=int(os.getenv("HSZ_ETL_OVERLAP_SECONDS", "600")))
-    initial_lookback: timedelta = timedelta(
-        minutes=int(os.getenv("HSZ_ETL_INITIAL_LOOKBACK_MINUTES", "60"))
-    )
+    def __post_init__(self) -> None:
+        if self.max_workers != 1:
+            raise ValueError("新 ETL 仅支持 HSZ_ETL_MAX_WORKERS=1 的单 worker 串行模式")
 
 
 def source_credentials(credential_key: str) -> tuple[str, str]:

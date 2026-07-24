@@ -1,24 +1,40 @@
-# ETL
+# ETL 运行说明
 
-ETL 是独立 CLI 进程；它不运行在 FastAPI lifespan、请求线程或 Uvicorn worker 中。
+所有命令和 HTTP 入口先写中心任务队列，唯一常驻 worker 串行处理“一个服务器 + 一个时间窗口”。门架连接仅执行带
+`GantryId IN (...)` 和 `[start,end)` 时间条件的只读查询，读取结束立即关闭。
+
+## 数据库迁移
+
+按维护者要求无需保留旧 ETL 数据，直接执行 `migrations/20260723_simplify_etl.sql`。脚本会删除重建 ODS、
+命中和同步日志，清空 15 张 ETL 派生事实表的数据并保留其结构；历史回填完成后重新
+生成事实数据。配置、字典、门架关系、规则等基础数据保留。ODS 以 `trade_id` 主键保证
+唯一。严禁在门架源库执行该脚本。
 
 ## 命令
 
 ```powershell
-python -m app.etl.cli inspect --source-mode legacy-test
-python -m app.etl.cli live-once --source-mode legacy-test --start "2026-06-26 09:30:00" --end "2026-06-26 09:40:00" --dry-run
-python -m app.etl.cli backfill --source-mode legacy-test --start "..." --end "..." --window-minutes 60 --job-name legacy_test --dry-run
-python -m app.etl.cli status
+python -m app.etl.cli live-once
+python -m app.etl.cli live
+python -m app.etl.cli backfill --start 2026-01-01T00:00:00 --end 2026-02-01T00:00:00
+python -m app.etl.cli nightly-check --days 1 2
+python -m app.etl.cli repair --sync-id <sync_id>
+python -m app.etl.cli repair --server <server_code> --start <start> --end <end>
+python -m app.etl.cli worker
 ```
 
-源凭据由 `CREDENTIAL_KEY_USER` 和 `CREDENTIAL_KEY_PASSWORD` 环境变量提供，例如 `SOURCE_DB_DEFAULT_USER`。不提供凭据时 remote 读取会失败，不会回退到默认账号。
+前五类命令只入队；只有最后的 `worker` 读取门架。生产不得启动第二个 worker。
 
-同步不使用跨任务 MySQL 命名锁；断点按 `job_code + source_server_id` 保存，只有全窗口成功且事实重算成功后才推进。事件键是 `SHA256(source_server_id|source_trade_id)`，月度 ODS 和命中表用唯一键实现幂等。源连接只用于读取明细并立即释放，转换、批量匹配写入和事实重建都在中心库完成。
+当前月固定读 `dfs_gantry_transaction`，过去月固定读 `dfs_gantry_transactionYYYYMM`；
+`auto` 模式对最近 10 天依次读取实时表和窗口所属历史月表，按 TradeId 去重且实时表优先；
+更早窗口只读历史月表。调试时可显式指定 `--source-mode realtime|history`，两者只读指定表。
 
-每个物理门架都由中心库动态映射；同一逻辑 HEX 的两个物理门架都读取并自然聚合，绝不按逻辑门架去重。
+历史初始化建议逐月提交。BACKFILL 固定使用 120 分钟标准窗口，流式批量 2000、窗口间休眠 5 秒、
+单 worker；恢复后即使全部窗口均 SKIPPED，也会在最新日志证明整月 COMPLETE 后重建事实。
+某个两小时窗口需要更小范围补数时使用 REPAIR，REPAIR 可处理指定时间范围。LIVE 重建当前窗口；REPAIR
+整个任务无失败和缺失后按受影响自然月分别重建；CHECK 不写业务数据也不重建事实。
 
-当前远程网络只可访问沿江公司 `10.13.*` 网段。`t_physical_gantry.collection_enabled=1` 的 32 条门架是本项目正式采集范围，其中当前可达范围为 26 条；未纳入该范围或位于不可达网段的门架不得默认作为实际采集源。已知可取得的出本路段数据可能仅覆盖 G50，外部方向必须如实报告为不可达或待确认。
+worker 启动时先将遗留 RUNNING 同步日志标记为 `WorkerRestart` 失败，再把 RUNNING 手工
+任务恢复为 PENDING；任务重跑会生成新的唯一同步日志。
 
-事实重算只能由协调器在全部源成功后集中执行，不能在每个源线程中累加。当前实现提供安全的 dry-run 验证路径；正式写入前仍须确认成功交易口径、上一门架介质选择和所有事实表重算 SQL。
-
-当前 remote 成功交易口径未确认，故 remote 模式拒绝 `ALL_ROWS_TEST`；legacy-test dry-run 使用该测试口径。车型字典以 `t_vehicle_type_dict` 为准，未知值应使用 `UNKNOWN`，不猜测车型分类。legacy-test 只读 `hsz_origin_sys.t_gantry_transaction`，不代表所有正式源库。
+夜间 03:00 运行 `nightly-check`，默认只检查 D-1 与 D-2，各拆 12 个两小时窗口，
+不自动补数。缺失仅表示 `source TradeId - center TradeId` 非空。

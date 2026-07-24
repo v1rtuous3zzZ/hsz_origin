@@ -1,0 +1,17 @@
+[Unit]
+Description=HSZ Origin single ETL worker
+After=network.target mysqld.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/hsz-origin/api
+Environment=PYTHONPATH=/opt/hsz-origin/api
+EnvironmentFile=/opt/hsz-origin/config/api.env
+ExecStart=/usr/bin/flock -n /run/hsz-etl-worker.lock /opt/hsz-origin/api/venv/bin/python -m app.etl.cli worker
+Restart=always
+RestartSec=5
+StandardOutput=append:/opt/hsz-origin/logs/etl-worker.log
+StandardError=append:/opt/hsz-origin/logs/etl-worker.log
+
+[Install]
+WantedBy=multi-user.target
